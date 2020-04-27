@@ -50,7 +50,7 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	copyHeaders(r, outboundRequest)
+	copyHeaders(r.Header, outboundRequest.Header)
 	resp, err := m.roundTripper.RoundTrip(outboundRequest)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -72,8 +72,8 @@ func isTLS(r *http.Request) bool {
 	return false
 }
 
-func copyHeaders(clientRequest *http.Request, serverRequest *http.Request) {
-	for name, values := range clientRequest.Header {
+func copyHeaders(inHeader http.Header, outHeader http.Header) {
+	for name, values := range inHeader {
 		var skipHeader = false
 		for _, skipHeaderName := range skipHeaders {
 			if name == skipHeaderName {
@@ -86,7 +86,7 @@ func copyHeaders(clientRequest *http.Request, serverRequest *http.Request) {
 		}
 		if !skipHeader {
 			for _, value := range values {
-				serverRequest.Header.Add(name, value)
+				outHeader.Add(name, value)
 			}
 		}
 	}
