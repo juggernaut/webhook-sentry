@@ -48,3 +48,40 @@ func TestCopyHeadersSkipWHSentryHeaders(t *testing.T) {
 		t.Error("Connection header erroneously removed")
 	}
 }
+
+func TestIsTLS(t *testing.T) {
+	t.Run("Header absent", func(t *testing.T) {
+		headers := make(map[string][]string)
+		headers["Connection"] = []string{"Close"}
+		if isTLS(headers) {
+			t.Error("isTLS should be false when X-WhSentry-TLS header is absent, but it was true")
+		}
+	})
+
+	t.Run("Header present", func(t *testing.T) {
+		headers := make(map[string][]string)
+		headers["Connection"] = []string{"Close"}
+		headers[http.CanonicalHeaderKey("X-WhSentry-TLS")] = []string{"true"}
+		if !isTLS(headers) {
+			t.Error("isTLS should be true when X-WhSentry-TLS header is present, but it was false")
+		}
+	})
+
+	t.Run("Header present but false", func(t *testing.T) {
+		headers := make(map[string][]string)
+		headers["Connection"] = []string{"Close"}
+		headers[http.CanonicalHeaderKey("X-WhSentry-TLS")] = []string{"false"}
+		if isTLS(headers) {
+			t.Error("isTLS should be false when X-WhSentry-TLS header is present but 'false', but it was true")
+		}
+	})
+
+	t.Run("Header present but 0", func(t *testing.T) {
+		headers := make(map[string][]string)
+		headers["Connection"] = []string{"Close"}
+		headers[http.CanonicalHeaderKey("X-WhSentry-TLS")] = []string{"0"}
+		if isTLS(headers) {
+			t.Error("isTLS should be false when X-WhSentry-TLS header is present but '0', but it was true")
+		}
+	})
+}

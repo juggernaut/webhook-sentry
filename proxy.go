@@ -42,7 +42,7 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	//fmt.Fprintf(w, "Hello Go HTTP")
 	var outboundUri = r.RequestURI
-	if isTLS(r) {
+	if isTLS(r.Header) {
 		outboundUri = strings.Replace(outboundUri, "http", "https", 1)
 	}
 	outboundRequest, err := http.NewRequest(r.Method, outboundUri, r.Body)
@@ -59,8 +59,8 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.Write(w)
 }
 
-func isTLS(r *http.Request) bool {
-	tlsHeader, ok := r.Header["X-Whsentry-Tls"]
+func isTLS(h http.Header) bool {
+	tlsHeader, ok := h["X-Whsentry-Tls"]
 	if ok {
 		for _, val := range tlsHeader {
 			if val == "0" || strings.EqualFold(val, "false") {
