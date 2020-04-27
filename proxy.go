@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
+
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	tr := &http.Transport{
@@ -43,12 +45,12 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isTLS(r) {
 		outboundUri = strings.Replace(outboundUri, "http", "https", 1)
 	}
-	log.Printf("Outbound requet to %s\n", outboundUri)
 	outboundRequest, err := http.NewRequest(r.Method, outboundUri, r.Body)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	copyHeaders(r, outboundRequest)
 	resp, err := m.roundTripper.RoundTrip(outboundRequest)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -68,4 +70,24 @@ func isTLS(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+func copyHeaders(clientRequest *http.Request, serverRequest *http.Request) {
+	for name, values := range clientRequest.Header {
+		var skipHeader = false
+		for _, skipHeaderName := range skipHeaders {
+			if name == skipHeaderName {
+				skipHeader = true
+				break
+			}
+		}
+		if strings.HasPrefix(name, "X-Whsentry") {
+			skipHeader = true
+		}
+		if !skipHeader {
+			for _, value := range values {
+				serverRequest.Header.Add(name, value)
+			}
+		}
+	}
 }
