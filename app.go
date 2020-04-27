@@ -10,24 +10,24 @@ import (
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	tr := &http.Transport{
+		Proxy: nil,
 		IdleConnTimeout:   20000,
 		DisableKeepAlives: true,
 	}
-	client := http.Client{Transport: tr}
 	server := &http.Server{
 		Addr:           ":9090",
-		Handler:        MyHttpHandler{client: client},
+		Handler:        ProxyHTTPHandler{roundTripper: tr},
 		MaxHeaderBytes: 1 << 20,
 	}
 	log.Fatal(server.ListenAndServe())
 }
 
 // some struct
-type MyHttpHandler struct {
-	client http.Client
+type ProxyHTTPHandler struct {
+	roundTripper http.RoundTripper
 }
 
-func (m MyHttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Host is %s\n", r.Host)
 	log.Printf("URL is %s\n", r.URL.String())
 	//fmt.Fprintf(w, "Hello Go HTTP")
@@ -36,7 +36,7 @@ func (m MyHttpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	resp, err := m.client.Do(outboundRequest)
+	resp, err := m.roundTripper.RoundTrip(outboundRequest)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
