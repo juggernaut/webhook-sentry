@@ -3,14 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
-	"net"
 	"net/http"
+	"strings"
 )
 
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	tr := &http.Transport{
-		Proxy: nil,
+		Proxy:             nil,
 		IdleConnTimeout:   20000,
 		DisableKeepAlives: true,
 	}
@@ -30,8 +30,21 @@ type ProxyHTTPHandler struct {
 func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Host is %s\n", r.Host)
 	log.Printf("URL is %s\n", r.URL.String())
+	if !r.URL.IsAbs() {
+		http.Error(w, "Request URI must be absolute", http.StatusBadRequest)
+		return
+	}
+	if r.URL.Scheme != "http" {
+		http.Error(w, "Scheme must be HTTP", http.StatusBadRequest)
+		return
+	}
 	//fmt.Fprintf(w, "Hello Go HTTP")
-	outboundRequest, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
+	var outboundUri = r.RequestURI
+	if isTLS(r) {
+		outboundUri = strings.Replace(outboundUri, "http", "https", 1)
+	}
+	log.Printf("Outbound requet to %s\n", outboundUri)
+	outboundRequest, err := http.NewRequest(r.Method, outboundUri, r.Body)
 	if err != nil {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
@@ -44,22 +57,15 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.Write(w)
 }
 
-func echoConnection(conn net.Conn) {
-	b := make([]byte, 20)
-	for {
-		n, err := conn.Read(b)
-		if err != nil {
-			fmt.Println(err)
-			conn.Close()
-			return
-		}
-		if n > 0 {
-			_, err := conn.Write(b[:n])
-			if err != nil {
-				fmt.Println(err)
-				conn.Close()
-				return
+func isTLS(r *http.Request) bool {
+	tlsHeader, ok := r.Header["X-Whsentry-Tls"]
+	if ok {
+		for _, val := range tlsHeader {
+			if val == "0" || strings.EqualFold(val, "false") {
+				return false
 			}
 		}
+		return true
 	}
+	return false
 }
