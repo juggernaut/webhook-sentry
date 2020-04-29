@@ -60,6 +60,7 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	copyHeaders(r.Header, outboundRequest.Header)
+	outboundRequest.Header["User-Agent"] = []string{"Webhook Sentry/0.1"}
 	resp, err := m.roundTripper.RoundTrip(outboundRequest)
 	if err != nil {
 		log.Fatal(err)
