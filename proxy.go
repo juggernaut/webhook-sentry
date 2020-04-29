@@ -1,20 +1,29 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
 
 func main() {
 	fmt.Printf("Hello egress proxy\n")
+	dialer := &net.Dialer{
+		Timeout:   time.Duration(30) * time.Second,
+		DualStack: false,
+		KeepAlive: -1,
+	}
 	tr := &http.Transport{
 		Proxy:             nil,
-		IdleConnTimeout:   20000,
+		IdleConnTimeout:   time.Duration(20) * time.Second,
 		DisableKeepAlives: true,
+		DialContext:       (&safeDialer{dialer: dialer}).DialContext,
 	}
 	server := &http.Server{
 		Addr:           ":9090",
@@ -53,6 +62,7 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeaders(r.Header, outboundRequest.Header)
 	resp, err := m.roundTripper.RoundTrip(outboundRequest)
 	if err != nil {
+		log.Fatal(err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -90,4 +100,34 @@ func copyHeaders(inHeader http.Header, outHeader http.Header) {
 			}
 		}
 	}
+}
+
+type safeDialer struct {
+	dialer *net.Dialer
+}
+
+func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	log.Printf("safeDialZContext Called with addr %s\n", addr)
+	//resolvedAddr, err := net.ResolveTCPAddr("tcp4", addr)
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := s.dialer.Resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	var chosenAddr string
+	for _, ip := range ips {
+		if strings.Count(ip.IP.String(), ":") < 2 {
+			chosenAddr = ip.IP.String()
+			break
+		}
+	}
+	if chosenAddr == "" {
+		return nil, fmt.Errorf("Target %s did not resolve to a valid IPv4 address", addr)
+	}
+	ipPort := net.JoinHostPort(chosenAddr, port)
+	log.Printf("Chosen address is %s\n", ipPort)
+	return s.dialer.DialContext(ctx, "tcp4", ipPort)
 }
