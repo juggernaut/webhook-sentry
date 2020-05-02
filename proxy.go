@@ -11,6 +11,7 @@ import (
 )
 
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
+var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
 
 func main() {
 	fmt.Printf("Hello egress proxy\n")
@@ -19,11 +20,20 @@ func main() {
 		DualStack: false,
 		KeepAlive: -1,
 	}
+
+	var cidrBlacklist []net.IPNet
+	for _, cidr := range cidrBlackListConfig {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			cidrBlacklist = append(cidrBlacklist, *ipNet)
+		}
+	}
+
 	tr := &http.Transport{
 		Proxy:             nil,
 		IdleConnTimeout:   time.Duration(20) * time.Second,
 		DisableKeepAlives: true,
-		DialContext:       (&safeDialer{dialer: dialer}).DialContext,
+		DialContext:       (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext,
 	}
 	server := &http.Server{
 		Addr:           ":9090",
@@ -63,11 +73,20 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	outboundRequest.Header["User-Agent"] = []string{"Webhook Sentry/0.1"}
 	resp, err := m.roundTripper.RoundTrip(outboundRequest)
 	if err != nil {
-		log.Fatal(err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		handleError(w, err)
 		return
 	}
 	resp.Write(w)
+}
+
+func handleError(w http.ResponseWriter, err error) {
+	log.Printf("error in roundtrip: %s\n", err)
+	switch v := err.(type) {
+	case *proxyError:
+		http.Error(w, v.message, int(v.statusCode))
+	default:
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	}
 }
 
 func isTLS(h http.Header) bool {
@@ -104,7 +123,8 @@ func copyHeaders(inHeader http.Header, outHeader http.Header) {
 }
 
 type safeDialer struct {
-	dialer *net.Dialer
+	dialer        *net.Dialer
+	cidrBlacklist []net.IPNet
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -118,17 +138,43 @@ func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net
 	if err != nil {
 		return nil, err
 	}
-	var chosenAddr string
+	var chosenIP net.IP = nil
 	for _, ip := range ips {
 		if strings.Count(ip.IP.String(), ":") < 2 {
-			chosenAddr = ip.IP.String()
+			chosenIP = ip.IP
 			break
 		}
 	}
-	if chosenAddr == "" {
-		return nil, fmt.Errorf("Target %s did not resolve to a valid IPv4 address", addr)
+	if chosenIP == nil {
+		//return nil, fmt.Errorf("Target %s did not resolve to a valid IPv4 address", addr)
+		return nil, &proxyError{statusCode: http.StatusBadRequest, message: fmt.Sprintf("Target %s did not resolve to a valid IPv4 address", addr)}
 	}
-	ipPort := net.JoinHostPort(chosenAddr, port)
+	if isBlacklisted(s.cidrBlacklist, chosenIP) {
+		return nil, &proxyError{statusCode: http.StatusForbidden, message: fmt.Sprintf("Blacklisted IP %s", chosenIP.String())}
+	}
+
+	ipPort := net.JoinHostPort(chosenIP.String(), port)
 	log.Printf("Chosen address is %s\n", ipPort)
 	return s.dialer.DialContext(ctx, "tcp4", ipPort)
+}
+
+func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
+	if cidrBlacklist == nil {
+		return false
+	}
+	for _, cidr := range cidrBlacklist {
+		if cidr.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+type proxyError struct {
+	statusCode uint
+	message    string
+}
+
+func (p *proxyError) Error() string {
+	return fmt.Sprintf("%s, Status code: %d", p.message, p.statusCode)
 }
