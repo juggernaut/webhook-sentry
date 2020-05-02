@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"os"
 )
 
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
@@ -21,13 +22,7 @@ func main() {
 		KeepAlive: -1,
 	}
 
-	var cidrBlacklist []net.IPNet
-	for _, cidr := range cidrBlackListConfig {
-		_, ipNet, err := net.ParseCIDR(cidr)
-		if err == nil {
-			cidrBlacklist = append(cidrBlacklist, *ipNet)
-		}
-	}
+	cidrBlacklist := getCidrBlacklist()
 
 	tr := &http.Transport{
 		Proxy:             nil,
@@ -41,6 +36,21 @@ func main() {
 		MaxHeaderBytes: 1 << 20,
 	}
 	log.Fatal(server.ListenAndServe())
+}
+
+func getCidrBlacklist() []net.IPNet {
+	if isTruish(os.Getenv("UNSAFE_SKIP_CIDR_BLACKLIST")) {
+		return nil
+	}
+
+	var cidrBlacklist []net.IPNet
+	for _, cidr := range cidrBlackListConfig {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			cidrBlacklist = append(cidrBlacklist, *ipNet)
+		}
+	}
+	return cidrBlacklist
 }
 
 // some struct
@@ -177,4 +187,11 @@ type proxyError struct {
 
 func (p *proxyError) Error() string {
 	return fmt.Sprintf("%s, Status code: %d", p.message, p.statusCode)
+}
+
+func isTruish(val string) bool {
+	if val == "" {
+		return false
+	}
+	return val == "1" || strings.EqualFold(val, "true")
 }
