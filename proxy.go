@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
-	"os"
+
+	log "github.com/sirupsen/logrus"
 )
 
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
@@ -59,15 +60,23 @@ type ProxyHTTPHandler struct {
 }
 
 func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Host is %s\n", r.Host)
-	log.Printf("URL is %s\n", r.URL.String())
+	resp, err := m.doProxy(r)
+	var responseCode int
+	if err != nil {
+		responseCode = handleError(w, err)
+	} else {
+		responseCode = resp.StatusCode
+		resp.Write(w)
+	}
+	logRequest(r, responseCode)
+}
+
+func (m ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
 	if !r.URL.IsAbs() {
-		http.Error(w, "Request URI must be absolute", http.StatusBadRequest)
-		return
+		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Request URI must be absolute"}
 	}
 	if r.URL.Scheme != "http" {
-		http.Error(w, "Scheme must be HTTP", http.StatusBadRequest)
-		return
+		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Scheme must be HTTP"}
 	}
 	//fmt.Fprintf(w, "Hello Go HTTP")
 	var outboundUri = r.RequestURI
@@ -76,27 +85,28 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	outboundRequest, err := http.NewRequest(r.Method, outboundUri, r.Body)
 	if err != nil {
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	copyHeaders(r.Header, outboundRequest.Header)
 	outboundRequest.Header["User-Agent"] = []string{"Webhook Sentry/0.1"}
-	resp, err := m.roundTripper.RoundTrip(outboundRequest)
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	resp.Write(w)
+	return m.roundTripper.RoundTrip(outboundRequest)
 }
 
-func handleError(w http.ResponseWriter, err error) {
-	log.Printf("error in roundtrip: %s\n", err)
+func handleError(w http.ResponseWriter, err error) int {
 	switch v := err.(type) {
 	case *proxyError:
 		http.Error(w, v.message, int(v.statusCode))
+		return int(v.statusCode)
 	default:
+		log.Warnf("Unexpected error while proxying request: %s\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return http.StatusInternalServerError
 	}
+}
+
+func logRequest(r *http.Request, responseCode int) {
+	requestLogger := log.WithFields(log.Fields{"client_ip": r.RemoteAddr, "method": r.Method, "url": r.RequestURI, "response_code": responseCode})
+	requestLogger.Infoln()
 }
 
 func isTLS(h http.Header) bool {
@@ -138,8 +148,6 @@ type safeDialer struct {
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	log.Printf("safeDialZContext Called with addr %s\n", addr)
-	//resolvedAddr, err := net.ResolveTCPAddr("tcp4", addr)
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
@@ -164,7 +172,6 @@ func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net
 	}
 
 	ipPort := net.JoinHostPort(chosenIP.String(), port)
-	log.Printf("Chosen address is %s\n", ipPort)
 	return s.dialer.DialContext(ctx, "tcp4", ipPort)
 }
 

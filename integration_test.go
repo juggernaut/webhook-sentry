@@ -5,11 +5,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 )
 
 func TestProxy(t *testing.T) {
+	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
 	go main()
 	go startTargetServer()
 	waitForStartup(t)
@@ -21,7 +23,8 @@ func TestProxy(t *testing.T) {
 	}
 	client := &http.Client{Transport: tr}
 
-	t.Run("simple proxied", func(t *testing.T) {
+	t.Run("localhost forbidden", func(t *testing.T) {
+		t.Skip("skipping forbidden test for now, since we enable unsafe mode for other tests")
 		resp, err := client.Get("http://localhost:12080")
 		if err != nil {
 			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
@@ -29,6 +32,17 @@ func TestProxy(t *testing.T) {
 		if resp.StatusCode != 403 {
 			t.Errorf("Expected status code 403, got %d\n", resp.StatusCode)
 		}
+	})
+
+	t.Run("Successful proxy", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12080")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+
 	})
 }
 
