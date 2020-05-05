@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
@@ -43,11 +45,14 @@ func BuildProxyServer(listenAddress string) *http.Server {
 
 	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
 
+	skipCertVerification := isTruish(os.Getenv("UNSAFE_SKIP_CERT_VERIFICATION"))
+
 	tr := &http.Transport{
 		Proxy:             nil,
 		IdleConnTimeout:   time.Duration(20) * time.Second,
 		DisableKeepAlives: true,
 		DialContext:       dialContext,
+		TLSClientConfig:   &tls.Config{InsecureSkipVerify: skipCertVerification},
 	}
 	server := &http.Server{
 		Addr:           listenAddress,
@@ -170,6 +175,9 @@ func handleError(w http.ResponseWriter, err error) int {
 	case *proxyError:
 		http.Error(w, v.message, int(v.statusCode))
 		return int(v.statusCode)
+	case x509.CertificateInvalidError, x509.HostnameError:
+		http.Error(w, v.Error(), http.StatusBadGateway)
+		return http.StatusBadGateway
 	default:
 		log.Warnf("Unexpected error while proxying request: %s\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
