@@ -60,6 +60,7 @@ type ProxyHTTPHandler struct {
 }
 
 func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	resp, err := m.doProxy(r)
 	var responseCode int
 	if err != nil {
@@ -68,7 +69,8 @@ func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		responseCode = resp.StatusCode
 		resp.Write(w)
 	}
-	logRequest(r, responseCode)
+	duration := time.Now().Sub(start)
+	logRequest(r, responseCode, duration)
 }
 
 func (m ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
@@ -104,8 +106,9 @@ func handleError(w http.ResponseWriter, err error) int {
 	}
 }
 
-func logRequest(r *http.Request, responseCode int) {
-	requestLogger := log.WithFields(log.Fields{"client_ip": r.RemoteAddr, "method": r.Method, "url": r.RequestURI, "response_code": responseCode})
+func logRequest(r *http.Request, responseCode int, responseTime time.Duration) {
+	requestLogger := log.WithFields(log.Fields{"client_ip": r.RemoteAddr, "method": r.Method, "url": r.RequestURI, "response_code": responseCode,
+		"response_time": responseTime})
 	requestLogger.Infoln()
 }
 
