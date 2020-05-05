@@ -25,18 +25,24 @@ func main() {
 
 	cidrBlacklist := getCidrBlacklist()
 
+	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
+
 	tr := &http.Transport{
 		Proxy:             nil,
 		IdleConnTimeout:   time.Duration(20) * time.Second,
 		DisableKeepAlives: true,
-		DialContext:       (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext,
+		DialContext:       dialContext,
 	}
 	server := &http.Server{
 		Addr:           ":9090",
-		Handler:        ProxyHTTPHandler{roundTripper: tr},
+		Handler:        ProxyHTTPHandler{roundTripper: tr, dialContext: dialContext},
 		MaxHeaderBytes: 1 << 20,
 	}
-	log.Fatal(server.ListenAndServe())
+	listener, err := net.Listen("tcp4", ":9090")
+	if err != nil {
+		log.Fatalf("Could not start egress proxy: %s\n", err)
+	}
+	log.Fatal(server.Serve(listener))
 }
 
 func getCidrBlacklist() []net.IPNet {
@@ -57,23 +63,75 @@ func getCidrBlacklist() []net.IPNet {
 // some struct
 type ProxyHTTPHandler struct {
 	roundTripper http.RoundTripper
+	dialContext  func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
-func (m ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	resp, err := m.doProxy(r)
-	var responseCode int
-	if err != nil {
-		responseCode = handleError(w, err)
+func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		p.handleConnect(w, r)
 	} else {
-		responseCode = resp.StatusCode
-		resp.Write(w)
+		start := time.Now()
+		resp, err := p.doProxy(r)
+		var responseCode int
+		if err != nil {
+			responseCode = handleError(w, err)
+		} else {
+			responseCode = resp.StatusCode
+			resp.Write(w)
+		}
+		duration := time.Now().Sub(start)
+		logRequest(r, responseCode, duration)
 	}
-	duration := time.Now().Sub(start)
-	logRequest(r, responseCode, duration)
 }
 
-func (m ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
+func (p ProxyHTTPHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
+	// TODO: think about what context deadlines to set etc
+	outboundConn, err := p.dialContext(context.Background(), "tcp4", r.RequestURI)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	defer outboundConn.Close()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "Connection hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+	inboundConn, bufrw, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer inboundConn.Close()
+	bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n")
+	bufrw.WriteString("Connection: Close\r\n")
+	bufrw.WriteString("\r\n")
+	bufrw.Flush()
+
+	go rawProxy(inboundConn, outboundConn)
+	rawProxy(outboundConn, inboundConn)
+}
+
+func rawProxy(inConn net.Conn, outConn net.Conn) {
+	defer inConn.Close()
+	defer outConn.Close()
+	buf := make([]byte, 2048)
+	for {
+		numRead, err := inConn.Read(buf)
+		if numRead > 0 {
+			_, writeErr := outConn.Write(buf[:numRead])
+			// Write must return a non-nil error if it returns n < len(p)
+			if writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (p ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
 	if !r.URL.IsAbs() {
 		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Request URI must be absolute"}
 	}
@@ -91,7 +149,7 @@ func (m ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
 	}
 	copyHeaders(r.Header, outboundRequest.Header)
 	outboundRequest.Header["User-Agent"] = []string{"Webhook Sentry/0.1"}
-	return m.roundTripper.RoundTrip(outboundRequest)
+	return p.roundTripper.RoundTrip(outboundRequest)
 }
 
 func handleError(w http.ResponseWriter, err error) int {
