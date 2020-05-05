@@ -15,8 +15,24 @@ import (
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
 var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
 
+const defaultListenAddress = ":9090"
+
 func main() {
 	fmt.Printf("Hello egress proxy\n")
+	listenAddress := os.Getenv("PROXY_ADDRESS")
+	if listenAddress == "" {
+		listenAddress = defaultListenAddress
+	}
+	server := BuildProxyServer(listenAddress)
+	listener, err := net.Listen("tcp4", listenAddress)
+	if err != nil {
+		log.Fatalf("Could not start egress proxy: %s\n", err)
+	}
+	log.Fatal(server.Serve(listener))
+}
+
+// BuildProxyServer creates a http.Server instance that is ready to proxy requests
+func BuildProxyServer(listenAddress string) *http.Server {
 	dialer := &net.Dialer{
 		Timeout:   time.Duration(30) * time.Second,
 		DualStack: false,
@@ -34,15 +50,12 @@ func main() {
 		DialContext:       dialContext,
 	}
 	server := &http.Server{
-		Addr:           ":9090",
+		Addr:           listenAddress,
 		Handler:        ProxyHTTPHandler{roundTripper: tr, dialContext: dialContext},
 		MaxHeaderBytes: 1 << 20,
 	}
-	listener, err := net.Listen("tcp4", ":9090")
-	if err != nil {
-		log.Fatalf("Could not start egress proxy: %s\n", err)
-	}
-	log.Fatal(server.Serve(listener))
+	return server
+	//return net.Listen("tcp4", ":9090")
 }
 
 func getCidrBlacklist() []net.IPNet {
