@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -56,13 +57,23 @@ func TestProxy(t *testing.T) {
 	}
 	client := &http.Client{Transport: tr}
 
-	t.Run("Successful proxy", func(t *testing.T) {
-		resp, err := client.Get("http://localhost:12080")
+	t.Run("Proxy 200 OK", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12080/target")
 		if err != nil {
 			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
 		}
 		if resp.StatusCode != 200 {
 			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+	})
+
+	t.Run("Proxy 404 Not Found", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12080/someRandomPath")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 404 {
+			t.Errorf("Expected status code 404, got %d\n", resp.StatusCode)
 		}
 	})
 
@@ -83,6 +94,55 @@ func TestProxy(t *testing.T) {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
 		}
 	})
+}
+
+func TestHTTPS(t *testing.T) {
+	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	os.Setenv("UNSAFE_SKIP_CERT_VERIFICATION", "true")
+	proxy := startProxy(t)
+	defer proxy.Shutdown(context.TODO())
+
+	httpsServer := startTargetHTTPSServer(t)
+	defer httpsServer.Shutdown(context.TODO())
+
+	waitForStartup(t)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+	}
+	client := &http.Client{Transport: tr}
+
+	t.Run("Successful HTTPS proxy", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "http://localhost:12081/target", nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		req.Header.Add("X-WHSentry-TLS", "true")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+	})
+
+	t.Run("Successful CONNECT proxy", func(t *testing.T) {
+		// Notice we don't add any header here, and target URL is https, however we
+		// need to disable cert validation on the client (not proxy) since proxy is now
+		// transparent
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		resp, err := client.Get("https://localhost:12081/target")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+	})
+
 }
 
 func waitForStartup(t *testing.T) {

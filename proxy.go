@@ -95,10 +95,37 @@ func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			responseCode = handleError(w, err)
 		} else {
 			responseCode = resp.StatusCode
-			resp.Write(w)
+			// XXX: this doesn't work, it writes the whole repsonse from target into the HTTP body
+			//resp.Write(w)
+			writeResponse(w, resp)
 		}
 		duration := time.Now().Sub(start)
 		logRequest(r, responseCode, duration)
+	}
+}
+
+func writeResponse(w http.ResponseWriter, resp *http.Response) {
+	defer resp.Body.Close()
+	for k, values := range resp.Header {
+		w.Header().Set(k, values[0])
+		for _, v := range values[1:] {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	buf := make([]byte, 512)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			_, writeErr := w.Write(buf[:n])
+			if writeErr != nil {
+				log.Errorf("Error writing to inbound socket: %s\n", writeErr)
+				break
+			}
+		}
+		if err != nil {
+			break
+		}
 	}
 }
 
