@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -145,6 +146,36 @@ func TestHTTPS(t *testing.T) {
 
 }
 
+func TestOutboundConnectionLifetime(t *testing.T) {
+
+	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	os.Setenv("CONNECTION_LIFETIME", "5s")
+	proxy := startProxy(t)
+	defer proxy.Shutdown(context.TODO())
+	go startSlowToRespondServer(t)
+
+	waitForStartup(t)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+	}
+	client := &http.Client{Transport: tr}
+
+	t.Run("test connection lifetime", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:14400/")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 404 {
+			t.Errorf("Expected status code 404, got %d\n", resp.StatusCode)
+		}
+
+	})
+
+}
+
 func waitForStartup(t *testing.T) {
 	i := 0
 	for {
@@ -210,4 +241,22 @@ func startTargetHTTPSServer(t *testing.T) *http.Server {
 	}()
 	return server
 
+}
+
+func startSlowToRespondServer(t *testing.T) {
+	listener, err := net.Listen("tcp4", ":14400")
+	if err != nil {
+		t.Fatalf("Failed to start slow server: %s\n", err)
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("Failed to accept connection in slow server: %s\n", err)
+	}
+	defer conn.Close()
+	time.Sleep(time.Second * 7)
+	bufw := bufio.NewWriter(conn)
+	bufw.WriteString("HTTP/1.1 200 OK\r\n")
+	bufw.WriteString("Connection: Close\r\n")
+	bufw.WriteString("\r\n")
+	bufw.Flush()
 }

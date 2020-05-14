@@ -19,6 +19,28 @@ var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
 
 const defaultListenAddress = ":9090"
 
+var connectionDialTimeout = getDurationFromEnv("CONNECT_TIMEOUT", "10s")
+
+func getDurationFromEnv(key string, defaultVal string) time.Duration {
+	return toDuration(key, getEnvOrDefault(key, defaultVal))
+}
+
+func getEnvOrDefault(key string, defaultVal string) string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
+
+func toDuration(key string, val string) time.Duration {
+	duration, err := time.ParseDuration(val)
+	if err != nil {
+		log.Fatalf("Invalid duration value specified for %s: %s", key, val)
+	}
+	return duration
+}
+
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	listenAddress := os.Getenv("PROXY_ADDRESS")
@@ -36,14 +58,19 @@ func main() {
 // BuildProxyServer creates a http.Server instance that is ready to proxy requests
 func BuildProxyServer(listenAddress string) *http.Server {
 	dialer := &net.Dialer{
-		Timeout:   time.Duration(30) * time.Second,
+		Timeout:   connectionDialTimeout,
 		DualStack: false,
 		KeepAlive: -1,
 	}
 
 	cidrBlacklist := getCidrBlacklist()
 
-	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
+	// This is not exactly socket read timeout... this seems hard to implement since I don't have
+	// access to the underlying connection while reading from the outbound connection...
+	// Probably can be done by passing the underlying connection using contexts (key/value pair)
+	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
+
+	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist, outboundConnectionLifetime: outboundConnectionLifetime}).DialContext
 
 	skipCertVerification := isTruish(os.Getenv("UNSAFE_SKIP_CERT_VERIFICATION"))
 
@@ -252,8 +279,9 @@ func copyHeaders(inHeader http.Header, outHeader http.Header) {
 }
 
 type safeDialer struct {
-	dialer        *net.Dialer
-	cidrBlacklist []net.IPNet
+	dialer                     *net.Dialer
+	cidrBlacklist              []net.IPNet
+	outboundConnectionLifetime time.Duration
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -281,7 +309,15 @@ func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net
 	}
 
 	ipPort := net.JoinHostPort(chosenIP.String(), port)
-	return s.dialer.DialContext(ctx, "tcp4", ipPort)
+	conn, err := s.dialer.DialContext(ctx, "tcp4", ipPort)
+	if err != nil {
+		return conn, err
+	}
+	err = conn.SetReadDeadline(time.Now().Add(s.outboundConnectionLifetime))
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
