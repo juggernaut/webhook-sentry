@@ -168,8 +168,8 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 		if err != nil {
 			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
 		}
-		if resp.StatusCode != 404 {
-			t.Errorf("Expected status code 404, got %d\n", resp.StatusCode)
+		if resp.StatusCode != 502 {
+			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
 		}
 
 	})

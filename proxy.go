@@ -70,7 +70,7 @@ func BuildProxyServer(listenAddress string) *http.Server {
 	// Probably can be done by passing the underlying connection using contexts (key/value pair)
 	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
 
-	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist, outboundConnectionLifetime: outboundConnectionLifetime}).DialContext
+	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
 
 	skipCertVerification := isTruish(os.Getenv("UNSAFE_SKIP_CERT_VERIFICATION"))
 
@@ -83,7 +83,7 @@ func BuildProxyServer(listenAddress string) *http.Server {
 	}
 	server := &http.Server{
 		Addr:           listenAddress,
-		Handler:        ProxyHTTPHandler{roundTripper: tr, dialContext: dialContext},
+		Handler:        ProxyHTTPHandler{roundTripper: tr, dialContext: dialContext, outboundConnectionLifetime: outboundConnectionLifetime},
 		MaxHeaderBytes: 1 << 20,
 	}
 	return server
@@ -107,16 +107,19 @@ func getCidrBlacklist() []net.IPNet {
 
 // some struct
 type ProxyHTTPHandler struct {
-	roundTripper http.RoundTripper
-	dialContext  func(ctx context.Context, network, addr string) (net.Conn, error)
+	roundTripper               http.RoundTripper
+	dialContext                func(ctx context.Context, network, addr string) (net.Conn, error)
+	outboundConnectionLifetime time.Duration
 }
 
 func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 	} else {
+		ctx, cancel := context.WithTimeout(context.TODO(), p.outboundConnectionLifetime)
+		defer cancel()
 		start := time.Now()
-		resp, err := p.doProxy(r)
+		resp, err := p.doProxy(ctx, r)
 		var responseCode int
 		if err != nil {
 			responseCode = handleError(w, err)
@@ -124,14 +127,14 @@ func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			responseCode = resp.StatusCode
 			// XXX: this doesn't work, it writes the whole repsonse from target into the HTTP body
 			//resp.Write(w)
-			writeResponse(w, resp)
+			writeResponse(w, resp, cancel)
 		}
 		duration := time.Now().Sub(start)
 		logRequest(r, responseCode, duration)
 	}
 }
 
-func writeResponse(w http.ResponseWriter, resp *http.Response) {
+func writeResponse(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
 	defer resp.Body.Close()
 	for k, values := range resp.Header {
 		w.Header().Set(k, values[0])
@@ -141,8 +144,14 @@ func writeResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	buf := make([]byte, 512)
+	timer := time.AfterFunc(time.Duration(2)*time.Second, func() {
+		cancel()
+	})
 	for {
 		n, err := resp.Body.Read(buf)
+		if !timer.Stop() {
+			<-timer.C
+		}
 		if n > 0 {
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
@@ -153,6 +162,7 @@ func writeResponse(w http.ResponseWriter, resp *http.Response) {
 		if err != nil {
 			break
 		}
+		timer.Reset(time.Duration(2) * time.Second)
 	}
 }
 
@@ -203,7 +213,7 @@ func rawProxy(inConn net.Conn, outConn net.Conn) {
 	}
 }
 
-func (p ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
+func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.Response, error) {
 	if !r.URL.IsAbs() {
 		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Request URI must be absolute"}
 	}
@@ -215,7 +225,7 @@ func (p ProxyHTTPHandler) doProxy(r *http.Request) (*http.Response, error) {
 	if isTLS(r.Header) {
 		outboundUri = strings.Replace(outboundUri, "http", "https", 1)
 	}
-	outboundRequest, err := http.NewRequest(r.Method, outboundUri, r.Body)
+	outboundRequest, err := http.NewRequestWithContext(ctx, r.Method, outboundUri, r.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +239,15 @@ func handleError(w http.ResponseWriter, err error) int {
 	case *proxyError:
 		http.Error(w, v.message, int(v.statusCode))
 		return int(v.statusCode)
+	case net.Error:
+		if v.Timeout() {
+			http.Error(w, "Request to target timed out", http.StatusBadGateway)
+			return http.StatusBadGateway
+		} else {
+			log.Warnf("Unexpected error while proxying request: %s\n", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return http.StatusInternalServerError
+		}
 	case x509.CertificateInvalidError, x509.HostnameError:
 		http.Error(w, v.Error(), http.StatusBadGateway)
 		return http.StatusBadGateway
@@ -279,9 +298,8 @@ func copyHeaders(inHeader http.Header, outHeader http.Header) {
 }
 
 type safeDialer struct {
-	dialer                     *net.Dialer
-	cidrBlacklist              []net.IPNet
-	outboundConnectionLifetime time.Duration
+	dialer        *net.Dialer
+	cidrBlacklist []net.IPNet
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -309,15 +327,7 @@ func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net
 	}
 
 	ipPort := net.JoinHostPort(chosenIP.String(), port)
-	conn, err := s.dialer.DialContext(ctx, "tcp4", ipPort)
-	if err != nil {
-		return conn, err
-	}
-	err = conn.SetReadDeadline(time.Now().Add(s.outboundConnectionLifetime))
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
+	return s.dialer.DialContext(ctx, "tcp4", ipPort)
 }
 
 func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
