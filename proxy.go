@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -19,8 +20,6 @@ var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
 var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
 
 const defaultListenAddress = ":9090"
-
-var connectionDialTimeout = getDurationFromEnv("CONNECT_TIMEOUT", "10s")
 
 func getDurationFromEnv(key string, defaultVal string) time.Duration {
 	return toDuration(key, getEnvOrDefault(key, defaultVal))
@@ -44,6 +43,7 @@ func toDuration(key string, val string) time.Duration {
 
 func main() {
 	fmt.Printf("Hello egress proxy\n")
+	setupLogging()
 	listenAddress := os.Getenv("PROXY_ADDRESS")
 	if listenAddress == "" {
 		listenAddress = defaultListenAddress
@@ -56,8 +56,20 @@ func main() {
 	log.Fatal(server.Serve(listener))
 }
 
+func setupLogging() {
+	if isTruish(os.Getenv("TRACE")) {
+		log.SetLevel(log.TraceLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
+}
+
 // BuildProxyServer creates a http.Server instance that is ready to proxy requests
 func BuildProxyServer(listenAddress string) *http.Server {
+	connectionDialTimeout := getDurationFromEnv("CONNECT_TIMEOUT", "10s")
+	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
+	idleReadTimeout := getDurationFromEnv("IDLE_READ_TIMEOUT", "10s")
+
 	dialer := &net.Dialer{
 		Timeout:   connectionDialTimeout,
 		DualStack: false,
@@ -65,10 +77,6 @@ func BuildProxyServer(listenAddress string) *http.Server {
 	}
 
 	cidrBlacklist := getCidrBlacklist()
-
-	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
-
-	idleReadTimeout := getDurationFromEnv("IDLE_READ_TIMEOUT", "10s")
 
 	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
 
@@ -81,14 +89,17 @@ func BuildProxyServer(listenAddress string) *http.Server {
 		DialContext:       dialContext,
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: skipCertVerification},
 	}
+	handler := &ProxyHTTPHandler{
+		roundTripper:               tr,
+		dialContext:                dialContext,
+		outboundConnectionLifetime: outboundConnectionLifetime,
+		idleReadTimeout:            idleReadTimeout,
+	}
+
 	server := &http.Server{
-		Addr: listenAddress,
-		Handler: ProxyHTTPHandler{
-			roundTripper:               tr,
-			dialContext:                dialContext,
-			outboundConnectionLifetime: outboundConnectionLifetime,
-			idleReadTimeout:            idleReadTimeout,
-		},
+		Addr:           listenAddress,
+		Handler:        handler,
+		ConnState:      handler.connStateCallback,
 		MaxHeaderBytes: 1 << 20,
 	}
 	return server
@@ -116,9 +127,10 @@ type ProxyHTTPHandler struct {
 	dialContext                func(ctx context.Context, network, addr string) (net.Conn, error)
 	outboundConnectionLifetime time.Duration
 	idleReadTimeout            time.Duration
+	currentInboundConns        uint32
 }
 
-func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r)
 	} else {
@@ -134,11 +146,30 @@ func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// XXX: this doesn't work, it writes the whole repsonse from target into the HTTP body
 			//resp.Write(w)
 			writeResponseHeaders(w, resp)
-			writeResponseBody(w, resp, cancel, p.idleReadTimeout)
+			p.writeResponseBody(w, resp, cancel)
 		}
 		duration := time.Now().Sub(start)
 		logRequest(r, responseCode, duration)
 	}
+}
+
+func (p *ProxyHTTPHandler) connStateCallback(conn net.Conn, connState http.ConnState) {
+	// NOTE: Hijacked connections do not transition to closed
+	if connState == http.StateNew {
+		p.incrementInboundConns()
+	} else if connState == http.StateClosed {
+		p.decrementInboundConns()
+	}
+}
+
+func (p *ProxyHTTPHandler) incrementInboundConns() {
+	updatedInboundConns := atomic.AddUint32(&p.currentInboundConns, 1)
+	log.Tracef("New inbound connection opened; current inbound connections = %d\n", updatedInboundConns)
+}
+
+func (p *ProxyHTTPHandler) decrementInboundConns() {
+	updatedInboundConns := atomic.AddUint32(&p.currentInboundConns, ^uint32(0))
+	log.Tracef("Inbound connection closed; current inbound connections = %d\n", updatedInboundConns)
 }
 
 func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
@@ -151,7 +182,7 @@ func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	w.WriteHeader(resp.StatusCode)
 }
 
-func writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc, idleReadTimeout time.Duration) {
+func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
 	defer resp.Body.Close()
 	hj, ok := w.(http.Hijacker)
 	if !ok {
@@ -163,9 +194,14 @@ func writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel contex
 		log.Errorf("Failed to hijack connection: %s\n", err)
 		return
 	}
-	defer inboundConn.Close()
+	defer func() {
+		// XXX: what happens if Close() fails?
+		inboundConn.Close()
+		p.decrementInboundConns()
+	}()
+	// XXX: pick optimal buffer size
 	buf := make([]byte, 512)
-	timer := time.AfterFunc(idleReadTimeout, func() {
+	timer := time.AfterFunc(p.idleReadTimeout, func() {
 		cancel()
 	})
 	for {
@@ -186,11 +222,11 @@ func writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel contex
 			log.Warnf("error occured reading response: %s\n", err)
 			break
 		}
-		timer.Reset(idleReadTimeout)
+		timer.Reset(p.idleReadTimeout)
 	}
 }
 
-func (p ProxyHTTPHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
+func (p *ProxyHTTPHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// TODO: think about what context deadlines to set etc
 	outboundConn, err := p.dialContext(context.Background(), "tcp4", r.RequestURI)
 	if err != nil {
