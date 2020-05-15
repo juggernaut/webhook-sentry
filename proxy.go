@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,16 +45,27 @@ func toDuration(key string, val string) time.Duration {
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	setupLogging()
-	listenAddress := os.Getenv("PROXY_ADDRESS")
-	if listenAddress == "" {
-		listenAddress = defaultListenAddress
+	httpListenAddress := os.Getenv("PROXY_HTTP_ADDRESS")
+	httpsListenAddress := os.Getenv("PROXY_HTTPS_ADDRESS")
+	certFile := os.Getenv("CERT_FILE")
+	keyFile := os.Getenv("KEY_FILE")
+	if httpsListenAddress != "" && (certFile == "" || keyFile == "") {
+		log.Fatal("certFile and keyFile must be specified for HTTPS listener")
 	}
-	server := BuildProxyServer(listenAddress)
-	listener, err := net.Listen("tcp4", listenAddress)
-	if err != nil {
-		log.Fatalf("Could not start egress proxy: %s\n", err)
+	if httpListenAddress == "" && httpsListenAddress == "" {
+		httpListenAddress = defaultListenAddress
 	}
-	log.Fatal(server.Serve(listener))
+	httpServer, httpsServer := BuildProxyServer(httpListenAddress, httpsListenAddress)
+	wg := &sync.WaitGroup{}
+	if httpServer != nil {
+		wg.Add(1)
+		startHTTPServer(httpListenAddress, httpServer, wg)
+	}
+	if httpsServer != nil {
+		wg.Add(1)
+		startTLSServer(httpsListenAddress, certFile, keyFile, httpsServer, wg)
+	}
+	wg.Wait()
 }
 
 func setupLogging() {
@@ -64,8 +76,34 @@ func setupLogging() {
 	}
 }
 
+func startHTTPServer(listenAddress string, server *http.Server, wg *sync.WaitGroup) {
+	listener, err := net.Listen("tcp4", listenAddress)
+	if err != nil {
+		log.Fatalf("Could not start egress proxy HTTP listener: %s\n", err)
+	}
+	go func() {
+		if err := server.Serve(listener); err != http.ErrServerClosed {
+			log.Fatalf("Failed to start proxy HTTP server: %s\n", err)
+		}
+		wg.Done()
+	}()
+}
+
+func startTLSServer(listenAddress, certFile, keyFile string, server *http.Server, wg *sync.WaitGroup) {
+	listener, err := net.Listen("tcp4", listenAddress)
+	if err != nil {
+		log.Fatalf("Could not start egress proxy HTTPS listener: %s\n", err)
+	}
+	go func() {
+		if err := server.ServeTLS(listener, certFile, keyFile); err != http.ErrServerClosed {
+			log.Fatalf("Failed to start proxy HTTPS server: %s\n", err)
+		}
+		wg.Done()
+	}()
+}
+
 // BuildProxyServer creates a http.Server instance that is ready to proxy requests
-func BuildProxyServer(listenAddress string) *http.Server {
+func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*http.Server, *http.Server) {
 	connectionDialTimeout := getDurationFromEnv("CONNECT_TIMEOUT", "10s")
 	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
 	idleReadTimeout := getDurationFromEnv("IDLE_READ_TIMEOUT", "10s")
@@ -89,21 +127,25 @@ func BuildProxyServer(listenAddress string) *http.Server {
 		DialContext:       dialContext,
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: skipCertVerification},
 	}
-	handler := &ProxyHTTPHandler{
-		roundTripper:               tr,
-		dialContext:                dialContext,
-		outboundConnectionLifetime: outboundConnectionLifetime,
-		idleReadTimeout:            idleReadTimeout,
+	addresses := []string{httpListenAddress, httpsListenAddress}
+	servers := make([]*http.Server, 2, 2)
+	for i, address := range addresses {
+		if address != "" {
+			handler := &ProxyHTTPHandler{
+				roundTripper:               tr,
+				dialContext:                dialContext,
+				outboundConnectionLifetime: outboundConnectionLifetime,
+				idleReadTimeout:            idleReadTimeout,
+			}
+			servers[i] = &http.Server{
+				Addr:           address,
+				Handler:        handler,
+				ConnState:      handler.connStateCallback,
+				MaxHeaderBytes: 1 << 20,
+			}
+		}
 	}
-
-	server := &http.Server{
-		Addr:           listenAddress,
-		Handler:        handler,
-		ConnState:      handler.connStateCallback,
-		MaxHeaderBytes: 1 << 20,
-	}
-	return server
-	//return net.Listen("tcp4", ":9090")
+	return servers[0], servers[1]
 }
 
 func getCidrBlacklist() []net.IPNet {

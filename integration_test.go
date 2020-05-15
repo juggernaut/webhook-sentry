@@ -15,6 +15,9 @@ import (
 	"time"
 )
 
+const proxyHttpAddress = "127.0.0.1:11090"
+const proxyHttpsAddress = "127.0.0.1:11091"
+
 func TestLocalNetworkForbidden(t *testing.T) {
 	proxy := startProxy(t)
 	defer proxy.Shutdown(context.TODO())
@@ -22,7 +25,7 @@ func TestLocalNetworkForbidden(t *testing.T) {
 	targetServer := startTargetServer(t)
 	defer targetServer.Shutdown(context.TODO())
 
-	waitForStartup(t)
+	waitForStartup(t, proxyHttpAddress)
 
 	tr := &http.Transport{
 		Proxy: func(r *http.Request) (*url.URL, error) {
@@ -51,7 +54,7 @@ func TestProxy(t *testing.T) {
 	targetServer := startTargetServer(t)
 	defer targetServer.Shutdown(context.TODO())
 
-	waitForStartup(t)
+	waitForStartup(t, proxyHttpAddress)
 
 	tr := &http.Transport{
 		Proxy: func(r *http.Request) (*url.URL, error) {
@@ -108,7 +111,7 @@ func TestHTTPS(t *testing.T) {
 	httpsServer := startTargetHTTPSServer(t)
 	defer httpsServer.Shutdown(context.TODO())
 
-	waitForStartup(t)
+	waitForStartup(t, proxyHttpAddress)
 
 	tr := &http.Transport{
 		Proxy: func(r *http.Request) (*url.URL, error) {
@@ -166,7 +169,7 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 	go startSlowToRespondServer(t)
 	go startNeverSendsBodyServer(t)
 
-	waitForStartup(t)
+	waitForStartup(t, proxyHttpAddress)
 
 	tr := &http.Transport{
 		Proxy: func(r *http.Request) (*url.URL, error) {
@@ -208,10 +211,71 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 
 }
 
-func waitForStartup(t *testing.T) {
+func TestHTTPSListener(t *testing.T) {
+	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	os.Setenv("UNSAFE_SKIP_CERT_VERIFICATION", "true")
+	proxy := startTLSProxy(t)
+	defer proxy.Shutdown(context.TODO())
+
+	targetServer := startTargetServer(t)
+	defer targetServer.Shutdown(context.TODO())
+
+	targetHTTPSServer := startTargetHTTPSServer(t)
+	defer targetHTTPSServer.Shutdown(context.TODO())
+
+	waitForStartup(t, proxyHttpsAddress)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			// Notice https in the proxy address
+			return url.Parse("https://127.0.0.1:11091")
+		},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+
+	t.Run("Test HTTPS proxy -> HTTP target", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "http://localhost:12080/target", nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+	})
+
+	t.Run("Test HTTPS proxy -> HTTPS target", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "http://localhost:12081/target", nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		req.Header.Add("X-WHSentry-TLS", "true")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		buf := new(strings.Builder)
+		_, err = io.Copy(buf, resp.Body)
+		if err != nil {
+			t.Errorf("Error while reading body: %s\n", err)
+		}
+		if buf.String() != "Hello from target HTTPS" {
+			t.Errorf("Expected string 'Hello from target HTTPS' in response, but was %s\n", buf.String())
+		}
+	})
+}
+
+func waitForStartup(t *testing.T, address string) {
 	i := 0
 	for {
-		conn, err := net.Dial("tcp4", "127.0.0.1:11090")
+		conn, err := net.Dial("tcp4", address)
 		if err != nil {
 			if i > 2 {
 				t.Error("Proxy did not start up in time")
@@ -230,13 +294,26 @@ func waitForStartup(t *testing.T) {
 
 func startProxy(t *testing.T) *http.Server {
 	setupLogging()
-	proxy := BuildProxyServer("127.0.0.1:11090")
+	proxy, _ := BuildProxyServer("127.0.0.1:11090", "")
 	go func() {
 		listener, err := net.Listen("tcp4", "127.0.0.1:11090")
 		if err != nil {
 			t.Fatalf("Could not start proxy listener: %s\n", err)
 		}
 		proxy.Serve(listener)
+	}()
+	return proxy
+}
+
+func startTLSProxy(t *testing.T) *http.Server {
+	setupLogging()
+	_, proxy := BuildProxyServer("", "127.0.0.1:11091")
+	go func() {
+		listener, err := net.Listen("tcp4", "127.0.0.1:11091")
+		if err != nil {
+			t.Fatalf("Could not start proxy listener: %s\n", err)
+		}
+		proxy.ServeTLS(listener, "certs/cert.pem", "certs/key.pem")
 	}()
 	return proxy
 }
