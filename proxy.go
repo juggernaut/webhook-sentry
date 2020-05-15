@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -65,10 +66,9 @@ func BuildProxyServer(listenAddress string) *http.Server {
 
 	cidrBlacklist := getCidrBlacklist()
 
-	// This is not exactly socket read timeout... this seems hard to implement since I don't have
-	// access to the underlying connection while reading from the outbound connection...
-	// Probably can be done by passing the underlying connection using contexts (key/value pair)
 	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
+
+	idleReadTimeout := getDurationFromEnv("IDLE_READ_TIMEOUT", "10s")
 
 	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
 
@@ -82,8 +82,13 @@ func BuildProxyServer(listenAddress string) *http.Server {
 		TLSClientConfig:   &tls.Config{InsecureSkipVerify: skipCertVerification},
 	}
 	server := &http.Server{
-		Addr:           listenAddress,
-		Handler:        ProxyHTTPHandler{roundTripper: tr, dialContext: dialContext, outboundConnectionLifetime: outboundConnectionLifetime},
+		Addr: listenAddress,
+		Handler: ProxyHTTPHandler{
+			roundTripper:               tr,
+			dialContext:                dialContext,
+			outboundConnectionLifetime: outboundConnectionLifetime,
+			idleReadTimeout:            idleReadTimeout,
+		},
 		MaxHeaderBytes: 1 << 20,
 	}
 	return server
@@ -110,6 +115,7 @@ type ProxyHTTPHandler struct {
 	roundTripper               http.RoundTripper
 	dialContext                func(ctx context.Context, network, addr string) (net.Conn, error)
 	outboundConnectionLifetime time.Duration
+	idleReadTimeout            time.Duration
 }
 
 func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,15 +133,15 @@ func (p ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			responseCode = resp.StatusCode
 			// XXX: this doesn't work, it writes the whole repsonse from target into the HTTP body
 			//resp.Write(w)
-			writeResponse(w, resp, cancel)
+			writeResponseHeaders(w, resp)
+			writeResponseBody(w, resp, cancel, p.idleReadTimeout)
 		}
 		duration := time.Now().Sub(start)
 		logRequest(r, responseCode, duration)
 	}
 }
 
-func writeResponse(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
-	defer resp.Body.Close()
+func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	for k, values := range resp.Header {
 		w.Header().Set(k, values[0])
 		for _, v := range values[1:] {
@@ -143,26 +149,44 @@ func writeResponse(w http.ResponseWriter, resp *http.Response, cancel context.Ca
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
+}
+
+func writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc, idleReadTimeout time.Duration) {
+	defer resp.Body.Close()
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		log.Error("Connection hijacking not supported, all requests will fail!")
+		return
+	}
+	inboundConn, _, err := hj.Hijack()
+	if err != nil {
+		log.Errorf("Failed to hijack connection: %s\n", err)
+		return
+	}
+	defer inboundConn.Close()
 	buf := make([]byte, 512)
-	timer := time.AfterFunc(time.Duration(2)*time.Second, func() {
+	timer := time.AfterFunc(idleReadTimeout, func() {
 		cancel()
 	})
 	for {
 		n, err := resp.Body.Read(buf)
-		if !timer.Stop() {
-			<-timer.C
-		}
 		if n > 0 {
-			_, writeErr := w.Write(buf[:n])
+			_, writeErr := inboundConn.Write(buf[:n])
 			if writeErr != nil {
-				log.Errorf("Error writing to inbound socket: %s\n", writeErr)
+				log.Warnf("Error writing to inbound socket: %s\n", writeErr)
 				break
 			}
 		}
-		if err != nil {
+		if err == io.EOF {
+			break
+		} else if err == context.Canceled {
+			log.Info("Socket idle read time out reached")
+			break
+		} else if err != nil {
+			log.Warnf("error occured reading response: %s\n", err)
 			break
 		}
-		timer.Reset(time.Duration(2) * time.Second)
+		timer.Reset(idleReadTimeout)
 	}
 }
 

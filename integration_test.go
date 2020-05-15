@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -150,9 +151,11 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 
 	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
 	os.Setenv("CONNECTION_LIFETIME", "5s")
+	os.Setenv("IDLE_READ_TIMEOUT", "2s")
 	proxy := startProxy(t)
 	defer proxy.Shutdown(context.TODO())
 	go startSlowToRespondServer(t)
+	go startNeverSendsBodyServer(t)
 
 	waitForStartup(t)
 
@@ -170,6 +173,26 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 		}
 		if resp.StatusCode != 502 {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
+		}
+	})
+
+	t.Run("test socket read timeout", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, "GET", "http://localhost:14402/", nil)
+		start := time.Now()
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		buf := make([]byte, resp.ContentLength, resp.ContentLength)
+		_, err = resp.Body.Read(buf)
+		if err != io.ErrUnexpectedEOF {
+			t.Errorf("Expected a 'UnexpectedEOF' error, instead got: %s\n", err)
+		}
+		duration := time.Now().Sub(start)
+		if !(duration.Seconds() >= 1.9 && duration.Seconds() <= 2.2) {
+			t.Errorf("Expected read timeout (and hence connection close) at ~2 seconds, instead it took %f seconds", duration.Seconds())
 		}
 
 	})
@@ -258,5 +281,27 @@ func startSlowToRespondServer(t *testing.T) {
 	bufw.WriteString("HTTP/1.1 200 OK\r\n")
 	bufw.WriteString("Connection: Close\r\n")
 	bufw.WriteString("\r\n")
+	bufw.Flush()
+}
+
+func startNeverSendsBodyServer(t *testing.T) {
+	listener, err := net.Listen("tcp4", ":14402")
+	if err != nil {
+		t.Fatalf("Failed to start never sends body server: %s\n", err)
+	}
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("Failed to accept connection in never sends body server: %s\n", err)
+	}
+	defer conn.Close()
+	bufw := bufio.NewWriter(conn)
+	bufw.WriteString("HTTP/1.1 200 OK\r\n")
+	bufw.WriteString("Connection: Close\r\n")
+	bufw.WriteString("Content-Length: 5\r\n")
+	bufw.WriteString("\r\n")
+	bufw.Flush()
+
+	time.Sleep(time.Second * 5)
+	bufw.WriteString("hello")
 	bufw.Flush()
 }
