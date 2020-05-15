@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,6 +129,14 @@ func TestHTTPS(t *testing.T) {
 		}
 		if resp.StatusCode != 200 {
 			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		buf := new(strings.Builder)
+		_, err = io.Copy(buf, resp.Body)
+		if err != nil {
+			t.Errorf("Error while reading body: %s\n", err)
+		}
+		if buf.String() != "Hello from target HTTPS" {
+			t.Errorf("Expected string 'Hello from target HTTPS' in response, but was %s\n", buf.String())
 		}
 	})
 
