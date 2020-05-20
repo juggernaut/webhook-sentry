@@ -116,16 +116,24 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 
 	cidrBlacklist := getCidrBlacklist()
 
-	dialContext := (&safeDialer{dialer: dialer, cidrBlacklist: cidrBlacklist}).DialContext
-
 	skipCertVerification := isTruish(os.Getenv("UNSAFE_SKIP_CERT_VERIFICATION"))
+
+	// TODO: get these from config
+	clientCerts := make(map[string]tls.Certificate)
+
+	sd := safeDialer{
+		dialer:                     dialer,
+		cidrBlacklist:              cidrBlacklist,
+		skipServerCertVerification: skipCertVerification,
+		clientCerts:                clientCerts,
+	}
 
 	tr := &http.Transport{
 		Proxy:             nil,
 		IdleConnTimeout:   time.Duration(20) * time.Second,
 		DisableKeepAlives: true,
-		DialContext:       dialContext,
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: skipCertVerification},
+		DialContext:       sd.DialContext,
+		DialTLSContext:    sd.DialTLSContext,
 	}
 	addresses := []string{httpListenAddress, httpsListenAddress}
 	servers := make([]*http.Server, 2, 2)
@@ -133,7 +141,7 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 		if address != "" {
 			handler := &ProxyHTTPHandler{
 				roundTripper:               tr,
-				dialContext:                dialContext,
+				dialContext:                sd.DialContext,
 				outboundConnectionLifetime: outboundConnectionLifetime,
 				idleReadTimeout:            idleReadTimeout,
 			}
@@ -400,18 +408,28 @@ func copyHeaders(inHeader http.Header, outHeader http.Header) {
 }
 
 type safeDialer struct {
-	dialer        *net.Dialer
-	cidrBlacklist []net.IPNet
+	dialer                     *net.Dialer
+	cidrBlacklist              []net.IPNet
+	clientCerts                map[string]tls.Certificate
+	skipServerCertVerification bool
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
+	ipPort, err := s.resolveIPPort(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
+	return s.dialer.DialContext(ctx, "tcp4", ipPort)
+}
+
+func (s *safeDialer) resolveIPPort(ctx context.Context, addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
 	ips, err := s.dialer.Resolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	var chosenIP net.IP = nil
 	for _, ip := range ips {
@@ -422,14 +440,37 @@ func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net
 	}
 	if chosenIP == nil {
 		//return nil, fmt.Errorf("Target %s did not resolve to a valid IPv4 address", addr)
-		return nil, &proxyError{statusCode: http.StatusBadRequest, message: fmt.Sprintf("Target %s did not resolve to a valid IPv4 address", addr)}
+		return "", &proxyError{statusCode: http.StatusBadRequest, message: fmt.Sprintf("Target %s did not resolve to a valid IPv4 address", addr)}
 	}
 	if isBlacklisted(s.cidrBlacklist, chosenIP) {
-		return nil, &proxyError{statusCode: http.StatusForbidden, message: fmt.Sprintf("Blacklisted IP %s", chosenIP.String())}
+		return "", &proxyError{statusCode: http.StatusForbidden, message: fmt.Sprintf("Blacklisted IP %s", chosenIP.String())}
 	}
 
-	ipPort := net.JoinHostPort(chosenIP.String(), port)
-	return s.dialer.DialContext(ctx, "tcp4", ipPort)
+	return net.JoinHostPort(chosenIP.String(), port), nil
+}
+
+func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	certAlias, ok := ctx.Value("certAlias").(string)
+	var getClientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+	if ok {
+		cert, ok := s.clientCerts[certAlias]
+		if !ok {
+			return nil, &proxyError{statusCode: http.StatusInternalServerError, message: "Programming error: Cert alias existence should have been checked upstack"}
+		}
+		getClientCert = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return &cert, nil
+		}
+	}
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify:   s.skipServerCertVerification,
+		GetClientCertificate: getClientCert,
+	}
+
+	ipPort, err := s.resolveIPPort(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	return tls.DialWithDialer(s.dialer, "tcp4", ipPort, tlsConfig)
 }
 
 func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
