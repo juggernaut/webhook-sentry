@@ -120,6 +120,16 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 
 	// TODO: get these from config
 	clientCerts := make(map[string]tls.Certificate)
+	clientCertfile := os.Getenv("CLIENT_CERTFILE")
+	clientKeyFile := os.Getenv("CLIENT_KEYFILE")
+	if clientCertfile != "" && clientKeyFile != "" {
+		defaultCert, err := tls.LoadX509KeyPair(clientCertfile, clientKeyFile)
+		if err != nil {
+			log.Warnf("Failed to load client keypair: %s\n", err)
+		} else {
+			clientCerts["default"] = defaultCert
+		}
+	}
 
 	sd := safeDialer{
 		dialer:                     dialer,
@@ -323,6 +333,10 @@ func rawProxy(inConn net.Conn, outConn net.Conn) {
 	}
 }
 
+type key int
+
+const clientCertKey key = 0
+
 func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.Response, error) {
 	if !r.URL.IsAbs() {
 		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Request URI must be absolute"}
@@ -334,6 +348,10 @@ func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.R
 	var outboundUri = r.RequestURI
 	if isTLS(r.Header) {
 		outboundUri = strings.Replace(outboundUri, "http", "https", 1)
+	}
+	clientCert, ok := r.Header["X-Whsentry-Clientcert"]
+	if ok && len(clientCert) > 0 {
+		ctx = context.WithValue(ctx, clientCertKey, clientCert[0])
 	}
 	outboundRequest, err := http.NewRequestWithContext(ctx, r.Method, outboundUri, r.Body)
 	if err != nil {
@@ -450,7 +468,7 @@ func (s *safeDialer) resolveIPPort(ctx context.Context, addr string) (string, er
 }
 
 func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	certAlias, ok := ctx.Value("certAlias").(string)
+	certAlias, ok := ctx.Value(clientCertKey).(string)
 	var getClientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
 	if ok {
 		cert, ok := s.clientCerts[certAlias]

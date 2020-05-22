@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -105,11 +107,16 @@ func TestProxy(t *testing.T) {
 func TestHTTPS(t *testing.T) {
 	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
 	os.Setenv("UNSAFE_SKIP_CERT_VERIFICATION", "true")
+	os.Setenv("CLIENT_CERTFILE", "certs/clientcert.pem")
+	os.Setenv("CLIENT_KEYFILE", "certs/clientkey.pem")
 	proxy := startProxy(t)
 	defer proxy.Shutdown(context.TODO())
 
 	httpsServer := startTargetHTTPSServer(t)
 	defer httpsServer.Shutdown(context.TODO())
+
+	httpsWithClientCertCheck := startTargetHTTPSServerWithClientCertCheck(t)
+	defer httpsWithClientCertCheck.Shutdown(context.TODO())
 
 	waitForStartup(t, proxyHttpAddress)
 
@@ -120,7 +127,7 @@ func TestHTTPS(t *testing.T) {
 	}
 	client := &http.Client{Transport: tr}
 
-	t.Run("Successful HTTPS proxy", func(t *testing.T) {
+	t.Run("Successful proxy to HTTPS target", func(t *testing.T) {
 		req, err := http.NewRequest("GET", "http://localhost:12081/target", nil)
 		if err != nil {
 			t.Fatalf("Failed to create new request: %s\n", err)
@@ -154,6 +161,30 @@ func TestHTTPS(t *testing.T) {
 		}
 		if resp.StatusCode != 200 {
 			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+	})
+
+	t.Run("Successful proxy to HTTPS target that checks client cert", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "http://localhost:12089/target", nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		req.Header.Add("X-WHSentry-TLS", "true")
+		req.Header.Add("X-WHSentry-ClientCert", "default")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		buf := new(strings.Builder)
+		_, err = io.Copy(buf, resp.Body)
+		if err != nil {
+			t.Errorf("Error while reading body: %s\n", err)
+		}
+		if buf.String() != "Hello from target HTTPS with client cert check" {
+			t.Errorf("Expected string 'Hello from target HTTPS with client cert check' in response, but was %s\n", buf.String())
 		}
 	})
 
@@ -391,4 +422,48 @@ func startNeverSendsBodyServer(t *testing.T) {
 	time.Sleep(time.Second * 5)
 	bufw.WriteString("hello")
 	bufw.Flush()
+}
+
+func startTargetHTTPSServerWithClientCertCheck(t *testing.T) *http.Server {
+	serveMux := http.NewServeMux()
+	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Hello from target HTTPS with client cert check")
+	})
+
+	server := &http.Server{
+		Addr:    "127.0.0.1:12089",
+		Handler: serveMux,
+	}
+	cert, err := tls.LoadX509KeyPair("certs/cert.pem", "certs/key.pem")
+	if err != nil {
+		t.Fatalf("Failed to load server certificate key pair %s\n", err)
+	}
+	clientCACertPool := x509.NewCertPool()
+	// This is a little confusing, but the server cert is a self-signed cert that is used to
+	// sign the client cert
+	caCertBytes, err := ioutil.ReadFile("certs/cert.pem")
+	if err != nil {
+		t.Fatalf("Failed to read CA cert %s\n", err)
+	}
+	if !clientCACertPool.AppendCertsFromPEM(caCertBytes) {
+		t.Fatal("Failed to append PEM cert to CA cert pool")
+	}
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCACertPool,
+	}
+
+	go func() {
+		listener, err := tls.Listen("tcp4", "127.0.0.1:12089", tlsConfig)
+		if err != nil {
+			t.Fatalf("Failed to listen on port 12089 %s\n", err)
+		}
+
+		if err := server.Serve(listener); err != http.ErrServerClosed {
+			t.Fatalf("HTTPS server failed to start: %s\n", err)
+		}
+	}()
+	return server
+
 }
