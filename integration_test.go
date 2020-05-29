@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -303,6 +304,49 @@ func TestHTTPSListener(t *testing.T) {
 	})
 }
 
+func TestContentLengthLimit(t *testing.T) {
+	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	maxContentLength := 8
+	os.Setenv("MAX_RESPONSE_BODY_LENGTH", strconv.Itoa(maxContentLength))
+	proxy := startProxy(t)
+	defer proxy.Shutdown(context.TODO())
+
+	targetServer := startLargeContentLengthServer(t)
+	defer targetServer.Shutdown(context.TODO())
+
+	waitForStartup(t, proxyHttpAddress)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+	}
+	client := &http.Client{Transport: tr}
+
+	t.Run("Max content length", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12099/8")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		if resp.ContentLength != int64(maxContentLength) {
+			t.Errorf("Expected Content-length: %d, found %d", maxContentLength, resp.ContentLength)
+		}
+	})
+
+	t.Run("Over max content length", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12099/9")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 502 {
+			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
+		}
+	})
+}
+
 func waitForStartup(t *testing.T, address string) {
 	i := 0
 	for {
@@ -466,4 +510,33 @@ func startTargetHTTPSServerWithClientCertCheck(t *testing.T) *http.Server {
 	}()
 	return server
 
+}
+
+func startLargeContentLengthServer(t *testing.T) *http.Server {
+	serveMux := http.NewServeMux()
+	baseStr := "eight ch"
+	content := strings.Repeat(baseStr, 1024)
+	serveMux.HandleFunc("/8", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, baseStr)
+	})
+
+	serveMux.HandleFunc("/9", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, baseStr+"a")
+	})
+
+	serveMux.HandleFunc("/8k", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, content)
+	})
+	serveMux.HandleFunc("/oversize", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, content+"a")
+	})
+
+	server := &http.Server{
+		Addr:    "127.0.0.1:12099",
+		Handler: serveMux,
+	}
+	go func() {
+		server.ListenAndServe()
+	}()
+	return server
 }

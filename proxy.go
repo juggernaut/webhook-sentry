@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -131,6 +132,15 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 		}
 	}
 
+	maxResponseBodyLengthStr := os.Getenv("MAX_RESPONSE_BODY_LENGTH")
+	if maxResponseBodyLengthStr == "" {
+		maxResponseBodyLengthStr = "1024 * 1024" // 1MB
+	}
+	maxResponseBodyLength, err := strconv.ParseUint(maxResponseBodyLengthStr, 10, 32)
+	if err != nil {
+		log.Fatalf("MAX_RESPONSE_BODY_LENGTH must be a valid integer; %s is not \n", maxResponseBodyLengthStr)
+	}
+
 	sd := safeDialer{
 		dialer:                     dialer,
 		cidrBlacklist:              cidrBlacklist,
@@ -154,6 +164,7 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 				dialContext:                sd.DialContext,
 				outboundConnectionLifetime: outboundConnectionLifetime,
 				idleReadTimeout:            idleReadTimeout,
+				maxContentLength:           uint32(maxResponseBodyLength),
 			}
 			servers[i] = &http.Server{
 				Addr:           address,
@@ -188,6 +199,7 @@ type ProxyHTTPHandler struct {
 	outboundConnectionLifetime time.Duration
 	idleReadTimeout            time.Duration
 	currentInboundConns        uint32
+	maxContentLength           uint32
 }
 
 func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -200,11 +212,14 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp, err := p.doProxy(ctx, r)
 		var responseCode int
 		if err != nil {
+			resp.Body.Close()
 			responseCode = handleError(w, err)
+		} else if resp.ContentLength > 0 && uint32(resp.ContentLength) > p.maxContentLength {
+			resp.Body.Close()
+			responseCode = http.StatusBadGateway
+			http.Error(w, "Response exceeds max content length", responseCode)
 		} else {
 			responseCode = resp.StatusCode
-			// XXX: this doesn't work, it writes the whole repsonse from target into the HTTP body
-			//resp.Write(w)
 			writeResponseHeaders(w, resp)
 			p.writeResponseBody(w, resp, cancel)
 		}
@@ -365,6 +380,7 @@ func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.R
 func handleError(w http.ResponseWriter, err error) int {
 	switch v := err.(type) {
 	case *proxyError:
+		// TODO: handle failure of http.Error
 		http.Error(w, v.message, int(v.statusCode))
 		return int(v.statusCode)
 	case net.Error:
