@@ -388,17 +388,17 @@ func TestChunkedResponseContentLengthLimit(t *testing.T) {
 		}
 	})
 
-	if false {
-		t.Run("Over max content length", func(t *testing.T) {
-			resp, err := client.Get("http://localhost:12099/9")
-			if err != nil {
-				t.Errorf("Error in GET request to target server via proxy: %s\n", err)
-			}
-			if resp.StatusCode != 502 {
-				t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
-			}
-		})
-	}
+	t.Run("Over max content length", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12099/oversize")
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		responseData, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Got error %s\n", err)
+		}
+		t.Logf("Got response data length %d\n", len(responseData))
+	})
 }
 
 func waitForStartup(t *testing.T, address string) {
