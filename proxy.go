@@ -274,21 +274,6 @@ func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 
 func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
 	defer resp.Body.Close()
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		log.Error("Connection hijacking not supported, all requests will fail!")
-		return
-	}
-	inboundConn, _, err := hj.Hijack()
-	if err != nil {
-		log.Errorf("Failed to hijack connection: %s\n", err)
-		return
-	}
-	defer func() {
-		// XXX: what happens if Close() fails?
-		inboundConn.Close()
-		p.decrementInboundConns()
-	}()
 	// XXX: pick optimal buffer size
 	buf := make([]byte, 512)
 	timer := time.AfterFunc(p.idleReadTimeout, func() {
@@ -304,7 +289,7 @@ func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.R
 				log.Warn("Response body exceeded maximum allowed length")
 				break
 			}
-			_, writeErr := inboundConn.Write(buf[:n])
+			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
 				log.Warnf("Error writing to inbound socket: %s\n", writeErr)
 				break
