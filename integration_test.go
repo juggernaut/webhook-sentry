@@ -74,6 +74,10 @@ func TestProxy(t *testing.T) {
 		if resp.StatusCode != 200 {
 			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
 		}
+		customHeader := resp.Header.Get("X-Custom-Header")
+		if customHeader != "custom" {
+			t.Fatalf("Expected custom header to be present, but it is not")
+		}
 	})
 
 	t.Run("Proxy 404 Not Found", func(t *testing.T) {
@@ -347,6 +351,56 @@ func TestContentLengthLimit(t *testing.T) {
 	})
 }
 
+func TestChunkedResponseContentLengthLimit(t *testing.T) {
+	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	maxContentLength := 8 * 1024
+	os.Setenv("MAX_RESPONSE_BODY_LENGTH", strconv.Itoa(maxContentLength))
+	proxy := startProxy(t)
+	defer proxy.Shutdown(context.TODO())
+
+	targetServer := startLargeContentLengthServer(t)
+	defer targetServer.Shutdown(context.TODO())
+
+	waitForStartup(t, proxyHttpAddress)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+	}
+	client := &http.Client{Transport: tr}
+	//client := &http.Client{}
+
+	t.Run("Max content length", func(t *testing.T) {
+		resp, err := client.Get("http://localhost:12099/8k")
+		if err != nil {
+			t.Fatalf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Fatalf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		responseData, err := ioutil.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("Error reading response data: %s\n", err)
+		}
+		if len(responseData) != maxContentLength {
+			t.Fatalf("Expected Content-length: %d, found %d", maxContentLength, len(responseData))
+		}
+	})
+
+	if false {
+		t.Run("Over max content length", func(t *testing.T) {
+			resp, err := client.Get("http://localhost:12099/9")
+			if err != nil {
+				t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+			}
+			if resp.StatusCode != 502 {
+				t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
+			}
+		})
+	}
+}
+
 func waitForStartup(t *testing.T, address string) {
 	i := 0
 	for {
@@ -396,6 +450,7 @@ func startTLSProxy(t *testing.T) *http.Server {
 func startTargetServer(t *testing.T) *http.Server {
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Custom-Header", "custom")
 		fmt.Fprint(w, "Hello from target")
 	})
 
@@ -525,6 +580,7 @@ func startLargeContentLengthServer(t *testing.T) *http.Server {
 	})
 
 	serveMux.HandleFunc("/8k", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Custom-Header", "oversize")
 		fmt.Fprint(w, content)
 	})
 	serveMux.HandleFunc("/oversize", func(w http.ResponseWriter, r *http.Request) {

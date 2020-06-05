@@ -134,7 +134,7 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 
 	maxResponseBodyLengthStr := os.Getenv("MAX_RESPONSE_BODY_LENGTH")
 	if maxResponseBodyLengthStr == "" {
-		maxResponseBodyLengthStr = "1024 * 1024" // 1MB
+		maxResponseBodyLengthStr = "1048576" // 1MB
 	}
 	maxResponseBodyLength, err := strconv.ParseUint(maxResponseBodyLengthStr, 10, 32)
 	if err != nil {
@@ -149,11 +149,12 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 	}
 
 	tr := &http.Transport{
-		Proxy:             nil,
-		IdleConnTimeout:   time.Duration(20) * time.Second,
-		DisableKeepAlives: true,
-		DialContext:       sd.DialContext,
-		DialTLSContext:    sd.DialTLSContext,
+		Proxy:              nil,
+		IdleConnTimeout:    time.Duration(20) * time.Second,
+		DisableKeepAlives:  true,
+		DisableCompression: true,
+		DialContext:        sd.DialContext,
+		DialTLSContext:     sd.DialTLSContext,
 	}
 	addresses := []string{httpListenAddress, httpsListenAddress}
 	servers := make([]*http.Server, 2, 2)
@@ -249,12 +250,26 @@ func (p *ProxyHTTPHandler) decrementInboundConns() {
 
 func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	for k, values := range resp.Header {
+		log.Infof("Header: %s = %s", k, values[0])
 		w.Header().Set(k, values[0])
 		for _, v := range values[1:] {
 			w.Header().Add(k, v)
 		}
 	}
+	if resp.TransferEncoding != nil {
+		log.Infof("Adding transfer encoding values!")
+		for _, t := range resp.TransferEncoding {
+			w.Header().Add("Transfer-Encoding", t)
+		}
+	}
 	w.WriteHeader(resp.StatusCode)
+	/*
+		flusher, ok := w.(http.Flusher)
+		if ok {
+			log.Infof("Flusing!!")
+			flusher.Flush()
+		}
+	*/
 }
 
 func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
@@ -279,9 +294,16 @@ func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.R
 	timer := time.AfterFunc(p.idleReadTimeout, func() {
 		cancel()
 	})
+	var bytesReadSoFar uint32 = 0
 	for {
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
+			bytesReadSoFar += uint32(n)
+			//log.Infof("Bytes read so far = %d", bytesReadSoFar)
+			if bytesReadSoFar > p.maxContentLength {
+				log.Warn("Response body exceeded maximum allowed length")
+				break
+			}
 			_, writeErr := inboundConn.Write(buf[:n])
 			if writeErr != nil {
 				log.Warnf("Error writing to inbound socket: %s\n", writeErr)
