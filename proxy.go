@@ -211,12 +211,13 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		start := time.Now()
 		resp, err := p.doProxy(ctx, r)
+		if resp != nil {
+			defer resp.Body.Close()
+		}
 		var responseCode int
 		if err != nil {
-			resp.Body.Close()
 			responseCode = handleError(w, err)
 		} else if resp.ContentLength > 0 && uint32(resp.ContentLength) > p.maxContentLength {
-			resp.Body.Close()
 			responseCode = http.StatusBadGateway
 			http.Error(w, "Response exceeds max content length", responseCode)
 		} else {

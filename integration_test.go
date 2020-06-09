@@ -388,6 +388,9 @@ func TestChunkedResponseContentLengthLimit(t *testing.T) {
 		}
 	})
 
+	// NOTE: this isn't a great test because if the proxy cuts off the response at a chunk
+	// boundary, the client can parse it correctly, otherwise the parsing fails. In this particular
+	// instance, it looks like the response is being cut off at a chunk boundary.
 	t.Run("Over max content length", func(t *testing.T) {
 		resp, err := client.Get("http://localhost:12099/oversize")
 		if err != nil {
@@ -397,7 +400,9 @@ func TestChunkedResponseContentLengthLimit(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Got error %s\n", err)
 		}
-		t.Logf("Got response data length %d\n", len(responseData))
+		if len(responseData) != maxContentLength {
+			t.Fatalf("Expected response length %d, got %d", maxContentLength, len(responseData))
+		}
 	})
 }
 
