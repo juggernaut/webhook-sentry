@@ -428,7 +428,7 @@ func waitForStartup(t *testing.T, address string) {
 
 func startProxy(t *testing.T) *http.Server {
 	setupLogging()
-	proxy, _ := BuildProxyServer("127.0.0.1:11090", "")
+	proxy, _ := BuildProxyServer("127.0.0.1:11090", "", nil)
 	go func() {
 		listener, err := net.Listen("tcp4", "127.0.0.1:11090")
 		if err != nil {
@@ -441,7 +441,7 @@ func startProxy(t *testing.T) *http.Server {
 
 func startTLSProxy(t *testing.T) *http.Server {
 	setupLogging()
-	_, proxy := BuildProxyServer("", "127.0.0.1:11091")
+	_, proxy := BuildProxyServer("", "127.0.0.1:11091", nil)
 	go func() {
 		listener, err := net.Listen("tcp4", "127.0.0.1:11091")
 		if err != nil {
