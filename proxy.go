@@ -528,7 +528,13 @@ func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (
 			return &cert, nil
 		}
 	}
+	// We need the host here to set the SNI hostname, otherwise it incorrectly uses the IP address as the SNI
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
 	tlsConfig := &tls.Config{
+		ServerName:           host,
 		InsecureSkipVerify:   s.skipServerCertVerification,
 		GetClientCertificate: getClientCert,
 		RootCAs:              s.rootCerts,
