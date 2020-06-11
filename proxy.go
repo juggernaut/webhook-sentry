@@ -18,7 +18,27 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v2"
 )
+
+type ProxyConfig struct {
+	CidrDenyList       []string
+	Listeners          []ListenerConfig
+	ConnectionLifetime uint32
+	ReadTimeout        uint32
+}
+
+type Protocol string
+
+const (
+	HTTP  Protocol = "http"
+	HTTPS Protocol = "https"
+)
+
+type ListenerConfig struct {
+	Address string
+	Type    Protocol
+}
 
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
 var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
@@ -47,7 +67,20 @@ func toDuration(key string, val string) time.Duration {
 
 func main() {
 	fmt.Printf("Hello egress proxy\n")
+	var data = `
+cidrDenyList: ["9.9.9.9", "172.0.0.1/24"]
+listeners:
+  - type: http
+    address: ":12090"
+`
 	setupLogging()
+	proxyConf := ProxyConfig{}
+	err := yaml.Unmarshal([]byte(data), &proxyConf)
+	if err != nil {
+		log.Fatalf("ERror unrmarshalling YAML: %s\n", err)
+	}
+	log.Info("Successfully parsed yaml")
+	log.Fatal("intentionally quit")
 	httpListenAddress := os.Getenv("PROXY_HTTP_ADDRESS")
 	httpsListenAddress := os.Getenv("PROXY_HTTPS_ADDRESS")
 	certFile := os.Getenv("CERT_FILE")
