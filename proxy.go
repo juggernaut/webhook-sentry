@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -56,7 +58,11 @@ func main() {
 	if httpListenAddress == "" && httpsListenAddress == "" {
 		httpListenAddress = defaultListenAddress
 	}
-	httpServer, httpsServer := BuildProxyServer(httpListenAddress, httpsListenAddress)
+	rootCerts, err := getRootCABundle()
+	if err != nil {
+		log.Fatalf("Failed to get Root CA bundle: %s\n", err)
+	}
+	httpServer, httpsServer := BuildProxyServer(httpListenAddress, httpsListenAddress, rootCerts)
 	wg := &sync.WaitGroup{}
 	if httpServer != nil {
 		wg.Add(1)
@@ -67,6 +73,23 @@ func main() {
 		startTLSServer(httpsListenAddress, certFile, keyFile, httpsServer, wg)
 	}
 	wg.Wait()
+}
+
+func getRootCABundle() (*x509.CertPool, error) {
+	resp, err := http.Get("https://curl.haxx.se/ca/cacert.pem")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	pemBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	rootCerts := x509.NewCertPool()
+	if !rootCerts.AppendCertsFromPEM(pemBytes) {
+		return nil, errors.New("Failed to append certs from downloaded PEM")
+	}
+	return rootCerts, nil
 }
 
 func setupLogging() {
@@ -104,7 +127,7 @@ func startTLSServer(listenAddress, certFile, keyFile string, server *http.Server
 }
 
 // BuildProxyServer creates a http.Server instance that is ready to proxy requests
-func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*http.Server, *http.Server) {
+func BuildProxyServer(httpListenAddress string, httpsListenAddress string, rootCerts *x509.CertPool) (*http.Server, *http.Server) {
 	connectionDialTimeout := getDurationFromEnv("CONNECT_TIMEOUT", "10s")
 	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
 	idleReadTimeout := getDurationFromEnv("IDLE_READ_TIMEOUT", "10s")
@@ -146,6 +169,7 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string) (*htt
 		cidrBlacklist:              cidrBlacklist,
 		skipServerCertVerification: skipCertVerification,
 		clientCerts:                clientCerts,
+		rootCerts:                  rootCerts,
 	}
 
 	tr := &http.Transport{
@@ -454,6 +478,7 @@ type safeDialer struct {
 	cidrBlacklist              []net.IPNet
 	clientCerts                map[string]tls.Certificate
 	skipServerCertVerification bool
+	rootCerts                  *x509.CertPool
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -506,6 +531,7 @@ func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify:   s.skipServerCertVerification,
 		GetClientCertificate: getClientCert,
+		RootCAs:              s.rootCerts,
 	}
 
 	ipPort, err := s.resolveIPPort(ctx, addr)
