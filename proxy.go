@@ -21,25 +21,6 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-type ProxyConfig struct {
-	CidrDenyList       []string
-	Listeners          []ListenerConfig
-	ConnectionLifetime uint32
-	ReadTimeout        uint32
-}
-
-type Protocol string
-
-const (
-	HTTP  Protocol = "http"
-	HTTPS Protocol = "https"
-)
-
-type ListenerConfig struct {
-	Address string
-	Type    Protocol
-}
-
 var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
 var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
 
