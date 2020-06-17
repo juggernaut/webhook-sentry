@@ -4,106 +4,46 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/yaml.v2"
 )
 
-var skipHeaders = [...]string{"Connection", "Proxy-Connection", "User-Agent"}
-var cidrBlackListConfig = [...]string{"127.0.0.0/8"}
-
-const defaultListenAddress = ":9090"
-
-func getDurationFromEnv(key string, defaultVal string) time.Duration {
-	return toDuration(key, getEnvOrDefault(key, defaultVal))
-}
-
-func getEnvOrDefault(key string, defaultVal string) string {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
-	return val
-}
-
-func toDuration(key string, val string) time.Duration {
-	duration, err := time.ParseDuration(val)
-	if err != nil {
-		log.Fatalf("Invalid duration value specified for %s: %s", key, val)
-	}
-	return duration
-}
+var skipHeaders = []string{"Connection", "Proxy-Connection", "User-Agent"}
 
 func main() {
 	fmt.Printf("Hello egress proxy\n")
-	var data = `
-cidrDenyList: ["9.9.9.9", "172.0.0.1/24"]
-listeners:
-  - type: http
-    address: ":12090"
-`
+	var config *ProxyConfig
+	if len(os.Args) > 1 {
+		var err error
+		config, err = UnmarshalConfigFromFile(os.Args[1])
+		if err != nil {
+			log.Fatalf("Failed to unmarshal config from file %s: %s\n", os.Args[1], err)
+		}
+	} else {
+		config = NewDefaultConfig()
+	}
 	setupLogging()
-	proxyConf := ProxyConfig{}
-	err := yaml.Unmarshal([]byte(data), &proxyConf)
-	if err != nil {
-		log.Fatalf("ERror unrmarshalling YAML: %s\n", err)
-	}
-	log.Info("Successfully parsed yaml")
-	log.Fatal("intentionally quit")
-	httpListenAddress := os.Getenv("PROXY_HTTP_ADDRESS")
-	httpsListenAddress := os.Getenv("PROXY_HTTPS_ADDRESS")
-	certFile := os.Getenv("CERT_FILE")
-	keyFile := os.Getenv("KEY_FILE")
-	if httpsListenAddress != "" && (certFile == "" || keyFile == "") {
-		log.Fatal("certFile and keyFile must be specified for HTTPS listener")
-	}
-	if httpListenAddress == "" && httpsListenAddress == "" {
-		httpListenAddress = defaultListenAddress
-	}
-	rootCerts, err := getRootCABundle()
-	if err != nil {
-		log.Fatalf("Failed to get Root CA bundle: %s\n", err)
-	}
-	httpServer, httpsServer := BuildProxyServer(httpListenAddress, httpsListenAddress, rootCerts)
+	proxyServers := CreateProxyServers(config)
 	wg := &sync.WaitGroup{}
-	if httpServer != nil {
+	for i, proxyServer := range proxyServers {
 		wg.Add(1)
-		startHTTPServer(httpListenAddress, httpServer, wg)
-	}
-	if httpsServer != nil {
-		wg.Add(1)
-		startTLSServer(httpsListenAddress, certFile, keyFile, httpsServer, wg)
+		listenerConfig := config.Listeners[i]
+		if listenerConfig.Type == HTTP {
+			startHTTPServer(listenerConfig.Address, proxyServer, wg)
+		} else {
+			startTLSServer(listenerConfig.Address, listenerConfig.CertFile, listenerConfig.KeyFile, proxyServer, wg)
+		}
 	}
 	wg.Wait()
-}
-
-func getRootCABundle() (*x509.CertPool, error) {
-	resp, err := http.Get("https://curl.haxx.se/ca/cacert.pem")
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	pemBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	rootCerts := x509.NewCertPool()
-	if !rootCerts.AppendCertsFromPEM(pemBytes) {
-		return nil, errors.New("Failed to append certs from downloaded PEM")
-	}
-	return rootCerts, nil
 }
 
 func setupLogging() {
@@ -140,53 +80,10 @@ func startTLSServer(listenAddress, certFile, keyFile string, server *http.Server
 	}()
 }
 
-// BuildProxyServer creates a http.Server instance that is ready to proxy requests
-func BuildProxyServer(httpListenAddress string, httpsListenAddress string, rootCerts *x509.CertPool) (*http.Server, *http.Server) {
-	connectionDialTimeout := getDurationFromEnv("CONNECT_TIMEOUT", "10s")
-	outboundConnectionLifetime := getDurationFromEnv("CONNECTION_LIFETIME", "60s")
-	idleReadTimeout := getDurationFromEnv("IDLE_READ_TIMEOUT", "10s")
+func CreateProxyServers(proxyConfig *ProxyConfig) []*http.Server {
 
-	dialer := &net.Dialer{
-		Timeout:   connectionDialTimeout,
-		DualStack: false,
-		KeepAlive: -1,
-	}
-
-	cidrBlacklist := getCidrBlacklist()
-
-	skipCertVerification := isTruish(os.Getenv("UNSAFE_SKIP_CERT_VERIFICATION"))
-
-	// TODO: get these from config
-	clientCerts := make(map[string]tls.Certificate)
-	clientCertfile := os.Getenv("CLIENT_CERTFILE")
-	clientKeyFile := os.Getenv("CLIENT_KEYFILE")
-	if clientCertfile != "" && clientKeyFile != "" {
-		defaultCert, err := tls.LoadX509KeyPair(clientCertfile, clientKeyFile)
-		if err != nil {
-			log.Warnf("Failed to load client keypair: %s\n", err)
-		} else {
-			clientCerts["default"] = defaultCert
-		}
-	}
-
-	maxResponseBodyLengthStr := os.Getenv("MAX_RESPONSE_BODY_LENGTH")
-	if maxResponseBodyLengthStr == "" {
-		maxResponseBodyLengthStr = "1048576" // 1MB
-	}
-	maxResponseBodyLength, err := strconv.ParseUint(maxResponseBodyLengthStr, 10, 32)
-	if err != nil {
-		log.Fatalf("MAX_RESPONSE_BODY_LENGTH must be a valid integer; %s is not \n", maxResponseBodyLengthStr)
-	}
-
-	sd := safeDialer{
-		dialer:                     dialer,
-		cidrBlacklist:              cidrBlacklist,
-		skipServerCertVerification: skipCertVerification,
-		clientCerts:                clientCerts,
-		rootCerts:                  rootCerts,
-	}
-
-	tr := &http.Transport{
+	sd := newSafeDialer(proxyConfig)
+	transport := &http.Transport{
 		Proxy:              nil,
 		IdleConnTimeout:    time.Duration(20) * time.Second,
 		DisableKeepAlives:  true,
@@ -194,44 +91,31 @@ func BuildProxyServer(httpListenAddress string, httpsListenAddress string, rootC
 		DialContext:        sd.DialContext,
 		DialTLSContext:     sd.DialTLSContext,
 	}
-	addresses := []string{httpListenAddress, httpsListenAddress}
-	servers := make([]*http.Server, 2, 2)
-	for i, address := range addresses {
-		if address != "" {
-			handler := &ProxyHTTPHandler{
-				roundTripper:               tr,
-				dialContext:                sd.DialContext,
-				outboundConnectionLifetime: outboundConnectionLifetime,
-				idleReadTimeout:            idleReadTimeout,
-				maxContentLength:           uint32(maxResponseBodyLength),
-			}
-			servers[i] = &http.Server{
-				Addr:           address,
-				Handler:        handler,
-				ConnState:      handler.connStateCallback,
-				MaxHeaderBytes: 1 << 20,
-			}
-		}
+
+	var proxyServers []*http.Server
+	for _, listenerConfig := range proxyConfig.Listeners {
+		proxyServers = append(proxyServers, newProxyServer(listenerConfig, proxyConfig, sd, transport))
 	}
-	return servers[0], servers[1]
+	return proxyServers
 }
 
-func getCidrBlacklist() []net.IPNet {
-	if isTruish(os.Getenv("UNSAFE_SKIP_CIDR_BLACKLIST")) {
-		return nil
+func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd *safeDialer, rt http.RoundTripper) *http.Server {
+	handler := &ProxyHTTPHandler{
+		roundTripper:               rt,
+		dialContext:                sd.DialContext,
+		outboundConnectionLifetime: proxyConfig.ConnectionLifetime,
+		idleReadTimeout:            proxyConfig.ReadTimeout,
+		maxContentLength:           proxyConfig.MaxResponseBodySize,
 	}
-
-	var cidrBlacklist []net.IPNet
-	for _, cidr := range cidrBlackListConfig {
-		_, ipNet, err := net.ParseCIDR(cidr)
-		if err == nil {
-			cidrBlacklist = append(cidrBlacklist, *ipNet)
-		}
+	return &http.Server{
+		Addr:           listenerConfig.Address,
+		Handler:        handler,
+		ConnState:      handler.connStateCallback,
+		MaxHeaderBytes: 1 << 20,
 	}
-	return cidrBlacklist
 }
 
-// some struct
+// ProxyHTTPHandler some struct
 type ProxyHTTPHandler struct {
 	roundTripper               http.RoundTripper
 	dialContext                func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -289,26 +173,17 @@ func (p *ProxyHTTPHandler) decrementInboundConns() {
 
 func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	for k, values := range resp.Header {
-		log.Infof("Header: %s = %s", k, values[0])
 		w.Header().Set(k, values[0])
 		for _, v := range values[1:] {
 			w.Header().Add(k, v)
 		}
 	}
 	if resp.TransferEncoding != nil {
-		log.Infof("Adding transfer encoding values!")
 		for _, t := range resp.TransferEncoding {
 			w.Header().Add("Transfer-Encoding", t)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	/*
-		flusher, ok := w.(http.Flusher)
-		if ok {
-			log.Infof("Flusing!!")
-			flusher.Flush()
-		}
-	*/
 }
 
 func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
@@ -493,6 +368,27 @@ type safeDialer struct {
 	clientCerts                map[string]tls.Certificate
 	skipServerCertVerification bool
 	rootCerts                  *x509.CertPool
+}
+
+func newSafeDialer(config *ProxyConfig) *safeDialer {
+	dialer := &net.Dialer{
+		Timeout:   config.ConnectTimeout,
+		DualStack: false,
+		KeepAlive: -1,
+	}
+	var cidrDenyList []net.IPNet
+	if !config.InsecureSkipCidrDenyList {
+		for _, cidr := range config.CidrDenyList {
+			cidrDenyList = append(cidrDenyList, net.IPNet(cidr))
+		}
+	}
+	return &safeDialer{
+		dialer:                     dialer,
+		cidrBlacklist:              cidrDenyList,
+		skipServerCertVerification: config.InsecureSkipCidrDenyList,
+		clientCerts:                config.ClientCerts,
+		rootCerts:                  config.RootCACerts,
+	}
 }
 
 func (s *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
