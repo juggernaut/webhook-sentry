@@ -385,7 +385,7 @@ func newSafeDialer(config *ProxyConfig) *safeDialer {
 	return &safeDialer{
 		dialer:                     dialer,
 		cidrBlacklist:              cidrDenyList,
-		skipServerCertVerification: config.InsecureSkipCidrDenyList,
+		skipServerCertVerification: config.InsecureSkipCertVerification,
 		clientCerts:                config.ClientCerts,
 		rootCerts:                  config.RootCACerts,
 	}

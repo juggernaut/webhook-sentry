@@ -11,8 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +20,7 @@ const proxyHttpAddress = "127.0.0.1:11090"
 const proxyHttpsAddress = "127.0.0.1:11091"
 
 func TestLocalNetworkForbidden(t *testing.T) {
-	proxy := startProxy(t)
+	proxy := startProxy(t, NewDefaultConfig())
 	defer proxy.Shutdown(context.TODO())
 
 	targetServer := startTargetServer(t)
@@ -50,8 +48,9 @@ func TestLocalNetworkForbidden(t *testing.T) {
 }
 
 func TestProxy(t *testing.T) {
-	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
-	proxy := startProxy(t)
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	proxy := startProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 
 	targetServer := startTargetServer(t)
@@ -110,11 +109,13 @@ func TestProxy(t *testing.T) {
 }
 
 func TestHTTPS(t *testing.T) {
-	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
-	os.Setenv("UNSAFE_SKIP_CERT_VERIFICATION", "true")
-	os.Setenv("CLIENT_CERTFILE", "certs/clientcert.pem")
-	os.Setenv("CLIENT_KEYFILE", "certs/clientkey.pem")
-	proxy := startProxy(t)
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	config.InsecureSkipCertVerification = true
+	config.ClientCertFile = "certs/clientcert.pem"
+	config.ClientKeyFile = "certs/clientkey.pem"
+	config.loadClientCert()
+	proxy := startProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 
 	httpsServer := startTargetHTTPSServer(t)
@@ -197,10 +198,11 @@ func TestHTTPS(t *testing.T) {
 
 func TestOutboundConnectionLifetime(t *testing.T) {
 
-	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
-	os.Setenv("CONNECTION_LIFETIME", "5s")
-	os.Setenv("IDLE_READ_TIMEOUT", "2s")
-	proxy := startProxy(t)
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	config.ConnectionLifetime = time.Second * 5
+	config.ReadTimeout = time.Second * 2
+	proxy := startProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 	go startSlowToRespondServer(t)
 	go startNeverSendsBodyServer(t)
@@ -248,9 +250,10 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 }
 
 func TestHTTPSListener(t *testing.T) {
-	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
-	os.Setenv("UNSAFE_SKIP_CERT_VERIFICATION", "true")
-	proxy := startTLSProxy(t)
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	config.InsecureSkipCertVerification = true
+	proxy := startTLSProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 
 	targetServer := startTargetServer(t)
@@ -309,10 +312,11 @@ func TestHTTPSListener(t *testing.T) {
 }
 
 func TestContentLengthLimit(t *testing.T) {
-	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
 	maxContentLength := 8
-	os.Setenv("MAX_RESPONSE_BODY_LENGTH", strconv.Itoa(maxContentLength))
-	proxy := startProxy(t)
+	config.MaxResponseBodySize = uint32(maxContentLength)
+	proxy := startProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 
 	targetServer := startLargeContentLengthServer(t)
@@ -352,10 +356,11 @@ func TestContentLengthLimit(t *testing.T) {
 }
 
 func TestChunkedResponseContentLengthLimit(t *testing.T) {
-	os.Setenv("UNSAFE_SKIP_CIDR_BLACKLIST", "true")
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
 	maxContentLength := 8 * 1024
-	os.Setenv("MAX_RESPONSE_BODY_LENGTH", strconv.Itoa(maxContentLength))
-	proxy := startProxy(t)
+	config.MaxResponseBodySize = uint32(maxContentLength)
+	proxy := startProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 
 	targetServer := startLargeContentLengthServer(t)
@@ -426,11 +431,16 @@ func waitForStartup(t *testing.T, address string) {
 	}
 }
 
-func startProxy(t *testing.T) *http.Server {
+func startProxy(t *testing.T, p *ProxyConfig) *http.Server {
 	setupLogging()
-	proxy, _ := BuildProxyServer("127.0.0.1:11090", "", nil)
+	p.Listeners = make([]ListenerConfig, 1, 1)
+	p.Listeners[0] = ListenerConfig{
+		Address: "127.0.0.1:11090",
+		Type:    HTTP,
+	}
+	proxy := CreateProxyServers(p)[0]
 	go func() {
-		listener, err := net.Listen("tcp4", "127.0.0.1:11090")
+		listener, err := net.Listen("tcp4", p.Listeners[0].Address)
 		if err != nil {
 			t.Fatalf("Could not start proxy listener: %s\n", err)
 		}
@@ -439,15 +449,22 @@ func startProxy(t *testing.T) *http.Server {
 	return proxy
 }
 
-func startTLSProxy(t *testing.T) *http.Server {
+func startTLSProxy(t *testing.T, p *ProxyConfig) *http.Server {
 	setupLogging()
-	_, proxy := BuildProxyServer("", "127.0.0.1:11091", nil)
+	p.Listeners = make([]ListenerConfig, 1, 1)
+	p.Listeners[0] = ListenerConfig{
+		Address:  "127.0.0.1:11091",
+		Type:     HTTP,
+		CertFile: "certs/cert.pem",
+		KeyFile:  "certs/key.pem",
+	}
+	proxy := CreateProxyServers(p)[0]
 	go func() {
-		listener, err := net.Listen("tcp4", "127.0.0.1:11091")
+		listener, err := net.Listen("tcp4", p.Listeners[0].Address)
 		if err != nil {
 			t.Fatalf("Could not start proxy listener: %s\n", err)
 		}
-		proxy.ServeTLS(listener, "certs/cert.pem", "certs/key.pem")
+		proxy.ServeTLS(listener, p.Listeners[0].CertFile, p.Listeners[0].KeyFile)
 	}()
 	return proxy
 }
