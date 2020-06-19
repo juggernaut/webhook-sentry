@@ -249,6 +249,62 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 
 }
 
+func TestCustomRootCA(t *testing.T) {
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	// This is false by default, but make it explicit for clarity
+	config.InsecureSkipCertVerification = false
+	pemBytes, err := ioutil.ReadFile("certs/cert.pem")
+	if err != nil {
+		t.Fatalf("Failed to read root CA certificate: %s", err)
+	}
+	rootCerts := x509.NewCertPool()
+	if !rootCerts.AppendCertsFromPEM(pemBytes) {
+		t.Fatal("Failed to append certs from downloaded PEM")
+	}
+	config.RootCACerts = rootCerts
+
+	proxy := startProxy(t, config)
+	defer proxy.Shutdown(context.TODO())
+
+	httpsServer := startTargetHTTPSServerWithCert(t, "certs/localhost_cert.pem", "certs/localhost_key.pem")
+	defer httpsServer.Shutdown(context.TODO())
+
+	waitForStartup(t, proxyHttpAddress)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+	}
+
+	client := &http.Client{Transport: tr}
+
+	t.Run("Successful proxy to HTTPS target with custom root CA", func(t *testing.T) {
+		req, err := http.NewRequest("GET", "http://localhost:12081/target", nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		req.Header.Add("X-WHSentry-TLS", "true")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		buf := new(strings.Builder)
+		_, err = io.Copy(buf, resp.Body)
+		if err != nil {
+			t.Errorf("Error while reading body: %s\n", err)
+		}
+		if buf.String() != "Hello from target HTTPS" {
+			t.Errorf("Expected string 'Hello from target HTTPS' in response, but was %s\n", buf.String())
+		}
+	})
+
+}
+
 func TestHTTPSListener(t *testing.T) {
 	config := NewDefaultConfig()
 	config.InsecureSkipCidrDenyList = true
@@ -487,6 +543,10 @@ func startTargetServer(t *testing.T) *http.Server {
 }
 
 func startTargetHTTPSServer(t *testing.T) *http.Server {
+	return startTargetHTTPSServerWithCert(t, "certs/cert.pem", "certs/key.pem")
+}
+
+func startTargetHTTPSServerWithCert(t *testing.T, certFile string, keyFile string) *http.Server {
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "Hello from target HTTPS")
@@ -497,12 +557,11 @@ func startTargetHTTPSServer(t *testing.T) *http.Server {
 		Handler: serveMux,
 	}
 	go func() {
-		if err := server.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"); err != http.ErrServerClosed {
+		if err := server.ListenAndServeTLS(certFile, keyFile); err != http.ErrServerClosed {
 			t.Fatalf("HTTPS server failed to start: %s\n", err)
 		}
 	}()
 	return server
-
 }
 
 func startSlowToRespondServer(t *testing.T) {
