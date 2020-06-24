@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -100,12 +101,30 @@ func CreateProxyServers(proxyConfig *ProxyConfig) []*http.Server {
 }
 
 func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd *safeDialer, rt http.RoundTripper) *http.Server {
+	// TODO: mitmer must be a singleton, takings shortcut for no
+	mitmer, err := NewMitmer()
+	if err != nil {
+		panic(err)
+	}
+	mitmer.dialContext = sd.DialContext
+	cert, err := tls.LoadX509KeyPair("certs/cert.pem", "certs/key.pem")
+	if err != nil {
+		panic(err)
+	}
+	mitmer.issuerPrivateKey = cert.PrivateKey
+	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		panic(err)
+	}
+	mitmer.issuerCertificate = x509Cert
+	log.Info("Successfully parsed certs for mitm")
 	handler := &ProxyHTTPHandler{
 		roundTripper:               rt,
 		dialContext:                sd.DialContext,
 		outboundConnectionLifetime: proxyConfig.ConnectionLifetime,
 		idleReadTimeout:            proxyConfig.ReadTimeout,
 		maxContentLength:           proxyConfig.MaxResponseBodySize,
+		mitmer:                     mitmer,
 	}
 	return &http.Server{
 		Addr:           listenerConfig.Address,
@@ -123,11 +142,12 @@ type ProxyHTTPHandler struct {
 	idleReadTimeout            time.Duration
 	currentInboundConns        uint32
 	maxContentLength           uint32
+	mitmer                     *Mitmer
 }
 
 func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
-		p.handleConnect(w, r)
+		p.mitmer.HandleHttpConnect(w, r)
 	} else {
 		ctx, cancel := context.WithTimeout(context.TODO(), p.outboundConnectionLifetime)
 		defer cancel()
@@ -246,8 +266,24 @@ func (p *ProxyHTTPHandler) handleConnect(w http.ResponseWriter, r *http.Request)
 	bufrw.WriteString("\r\n")
 	bufrw.Flush()
 
-	go rawProxy(inboundConn, outboundConn)
-	rawProxy(outboundConn, inboundConn)
+	mitm(inboundConn)
+
+	//go rawProxy(inboundConn, outboundConn)
+	//rawProxy(outboundConn, inboundConn)
+}
+
+func mitm(inboundConn net.Conn) {
+	config := &tls.Config{
+		GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			log.Infof("Server name in client hello is %s\n", clientHello.ServerName)
+			return nil, errors.New("certificate mitm not implemented")
+		},
+	}
+	tlsConn := tls.Server(inboundConn, config)
+	err := tlsConn.Handshake()
+	if err != nil {
+		log.Errorf("Handshake failed with error %s\n", err)
+	}
 }
 
 func rawProxy(inConn net.Conn, outConn net.Conn) {
