@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -59,15 +58,15 @@ func (m *Mitmer) HandleHttpConnect(w http.ResponseWriter, r *http.Request) {
 	bufrw.WriteString("\r\n")
 	bufrw.Flush()
 
-	m.doMitm(inboundConn, r.URL.Hostname())
+	m.doMitm(inboundConn, outboundConn, r.URL.Hostname())
 }
 
-func (m *Mitmer) doMitm(inboundConn net.Conn, hostnameInRequest string) {
+func (m *Mitmer) doMitm(inboundConn net.Conn, outboundConn net.Conn, hostnameInRequest string) {
+	var remoteHostname string
 	config := &tls.Config{
 		GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			sni := clientHello.ServerName
 			log.Infof("Server name in client hello is %s\n", sni)
-			var remoteHostname string
 			if sni == "" {
 				remoteHostname = hostnameInRequest
 			} else {
@@ -79,19 +78,37 @@ func (m *Mitmer) doMitm(inboundConn net.Conn, hostnameInRequest string) {
 			return m.generateCert(remoteHostname)
 		},
 	}
-	tlsConn := tls.Server(inboundConn, config)
-	defer tlsConn.Close()
-	err := tlsConn.Handshake()
+	inboundTLSConn := tls.Server(inboundConn, config)
+	defer inboundTLSConn.Close()
+	err := inboundTLSConn.Handshake()
 	if err != nil {
 		log.Errorf("Handshake failed with error %s\n", err)
 		return
 	}
-	writer := bufio.NewWriter(tlsConn)
-	writer.WriteString("HTTP/1.1 200 OK\r\n")
-	writer.WriteString("Connection: Close\r\n")
-	writer.WriteString("\r\n")
-	writer.WriteString("You are MITMed")
-	writer.Flush()
+	/*
+		writer := bufio.NewWriter(tlsConn)
+		writer.WriteString("HTTP/1.1 200 OK\r\n")
+		writer.WriteString("Connection: Close\r\n")
+		writer.WriteString("\r\n")
+		writer.WriteString("You are MITMed")
+		writer.Flush()
+	*/
+	// NOTE: remoteHostname will only be set after the inbound handshake is done, so we can't do
+	// inbound and outbound handshakes in parallel
+	// TODO: this is skipping mutual auth, should probably re-use safeDialer, but this will mean we delay
+	// TODO: outbound connection establishment until now
+	outboundTLSConfig := &tls.Config{
+		ServerName: remoteHostname,
+	}
+	outboundTLSConn := tls.Client(outboundConn, outboundTLSConfig)
+	defer outboundTLSConn.Close()
+	err = outboundTLSConn.Handshake()
+	if err != nil {
+		log.Errorf("TLS Handshake failed on outbound connection: %s\n", err)
+		return
+	}
+	go rawProxy(inboundTLSConn, outboundTLSConn)
+	rawProxy(outboundTLSConn, inboundTLSConn)
 }
 
 // Heavily inspired by generate_cert.go
