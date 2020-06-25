@@ -85,14 +85,6 @@ func (m *Mitmer) doMitm(inboundConn net.Conn, outboundConn net.Conn, hostnameInR
 		log.Errorf("Handshake failed with error %s\n", err)
 		return
 	}
-	/*
-		writer := bufio.NewWriter(tlsConn)
-		writer.WriteString("HTTP/1.1 200 OK\r\n")
-		writer.WriteString("Connection: Close\r\n")
-		writer.WriteString("\r\n")
-		writer.WriteString("You are MITMed")
-		writer.Flush()
-	*/
 	// NOTE: remoteHostname will only be set after the inbound handshake is done, so we can't do
 	// inbound and outbound handshakes in parallel
 	// TODO: this is skipping mutual auth, should probably re-use safeDialer, but this will mean we delay
