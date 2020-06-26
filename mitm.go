@@ -11,9 +11,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -66,7 +68,6 @@ func (m *Mitmer) doMitm(inboundConn net.Conn, outboundConn net.Conn, hostnameInR
 	config := &tls.Config{
 		GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			sni := clientHello.ServerName
-			log.Infof("Server name in client hello is %s\n", sni)
 			if sni == "" {
 				remoteHostname = hostnameInRequest
 			} else {
@@ -99,8 +100,17 @@ func (m *Mitmer) doMitm(inboundConn net.Conn, outboundConn net.Conn, hostnameInR
 		log.Errorf("TLS Handshake failed on outbound connection: %s\n", err)
 		return
 	}
-	go rawProxy(inboundTLSConn, outboundTLSConn)
-	rawProxy(outboundTLSConn, inboundTLSConn)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		rawProxy(inboundTLSConn, outboundTLSConn)
+		wg.Done()
+	}()
+	go func() {
+		rawProxy(outboundTLSConn, inboundTLSConn)
+		wg.Done()
+	}()
+	wg.Wait()
 }
 
 // Heavily inspired by generate_cert.go
@@ -159,5 +169,32 @@ func publicKey(priv interface{}) interface{} {
 		return k.Public().(ed25519.PublicKey)
 	default:
 		return nil
+	}
+}
+
+func rawProxy(inConn *tls.Conn, outConn *tls.Conn) {
+	buf := make([]byte, 2048)
+	for {
+		numRead, err := inConn.Read(buf)
+		if numRead > 0 {
+			_, writeErr := outConn.Write(buf[:numRead])
+			// Write must return a non-nil error if it returns n < len(p)
+			if writeErr != nil {
+				log.Warnf("Error writing to outbound connection: %s\n", writeErr)
+				inConn.Close()
+				outConn.Close()
+				return
+			}
+		}
+		if err == io.EOF {
+			outConn.CloseWrite()
+			return
+		}
+		if err != nil {
+			log.Warnf("Error reading from inbound connection: %s\n", err)
+			inConn.Close()
+			outConn.Close()
+			return
+		}
 	}
 }

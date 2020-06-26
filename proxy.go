@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -117,7 +116,6 @@ func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd 
 		panic(err)
 	}
 	mitmer.issuerCertificate = x509Cert
-	log.Info("Successfully parsed certs for mitm")
 	handler := &ProxyHTTPHandler{
 		roundTripper:               rt,
 		dialContext:                sd.DialContext,
@@ -239,69 +237,6 @@ func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.R
 			break
 		}
 		timer.Reset(p.idleReadTimeout)
-	}
-}
-
-func (p *ProxyHTTPHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// TODO: think about what context deadlines to set etc
-	outboundConn, err := p.dialContext(context.Background(), "tcp4", r.RequestURI)
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	defer outboundConn.Close()
-	hj, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "Connection hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-	inboundConn, bufrw, err := hj.Hijack()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer inboundConn.Close()
-	bufrw.WriteString("HTTP/1.1 200 Connection Established\r\n")
-	bufrw.WriteString("Connection: Close\r\n")
-	bufrw.WriteString("\r\n")
-	bufrw.Flush()
-
-	mitm(inboundConn)
-
-	//go rawProxy(inboundConn, outboundConn)
-	//rawProxy(outboundConn, inboundConn)
-}
-
-func mitm(inboundConn net.Conn) {
-	config := &tls.Config{
-		GetCertificate: func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			log.Infof("Server name in client hello is %s\n", clientHello.ServerName)
-			return nil, errors.New("certificate mitm not implemented")
-		},
-	}
-	tlsConn := tls.Server(inboundConn, config)
-	err := tlsConn.Handshake()
-	if err != nil {
-		log.Errorf("Handshake failed with error %s\n", err)
-	}
-}
-
-func rawProxy(inConn net.Conn, outConn net.Conn) {
-	defer inConn.Close()
-	defer outConn.Close()
-	buf := make([]byte, 2048)
-	for {
-		numRead, err := inConn.Read(buf)
-		if numRead > 0 {
-			_, writeErr := outConn.Write(buf[:numRead])
-			// Write must return a non-nil error if it returns n < len(p)
-			if writeErr != nil {
-				return
-			}
-		}
-		if err != nil {
-			return
-		}
 	}
 }
 
