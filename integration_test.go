@@ -17,14 +17,20 @@ import (
 	"time"
 )
 
-const proxyHttpAddress = "127.0.0.1:11090"
-const proxyHttpsAddress = "127.0.0.1:11091"
+const (
+	proxyHttpAddress      = "127.0.0.1:11090"
+	proxyHttpsAddress     = "127.0.0.1:11091"
+	httpTargetServerPort  = "12080"
+	httpsTargetServerPort = "12081"
+)
 
 type certificateFixtures struct {
-	rootCAs          *x509.CertPool
-	rootCAPrivateKey crypto.PrivateKey
-	serverCert       *tls.Certificate
-	clientCert       *tls.Certificate
+	rootCAs                   *x509.CertPool
+	rootCAPrivateKey          crypto.PrivateKey
+	proxyCert                 *tls.Certificate
+	serverCert                *tls.Certificate
+	invalidHostnameServerCert *tls.Certificate
+	clientCert                *tls.Certificate
 }
 
 var fixtures *certificateFixtures
@@ -42,15 +48,82 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 		t.Fatalf("Error generating server cert: %s", err)
 	}
 
+	invalidHostnameServerCert, err := generateLeafCert("wh-target-server.com", rootCert, rootCertKey, false)
+	if err != nil {
+		t.Fatalf("Error generating server cert: %s", err)
+	}
+
+	proxyCert, err := generateLeafCert("localhost", rootCert, rootCertKey, false)
+	if err != nil {
+		t.Fatalf("Error generating server cert: %s", err)
+	}
+
 	clientCert, err := generateLeafCert("wh-client.com", rootCert, rootCertKey, true)
 	if err != nil {
 		t.Fatalf("Error generating client cert: %s", err)
 	}
 	return &certificateFixtures{
-		rootCAs:          certPool,
-		rootCAPrivateKey: rootCertKey,
-		serverCert:       serverCert,
-		clientCert:       clientCert,
+		rootCAs:                   certPool,
+		rootCAPrivateKey:          rootCertKey,
+		serverCert:                serverCert,
+		invalidHostnameServerCert: invalidHostnameServerCert,
+		proxyCert:                 proxyCert,
+		clientCert:                clientCert,
+	}
+}
+
+type testFixture struct {
+	certificates *certificateFixtures
+	configSetup  func(*ProxyConfig)
+	serversSetup func(*ProxyConfig, *certificateFixtures) []*http.Server
+	proxy        *http.Server
+	proxyType    Protocol
+	servers      []*http.Server
+}
+
+func (f *testFixture) setUp(t *testing.T) *http.Client {
+	if f.certificates == nil {
+		f.certificates = newCertificateFixtures(t)
+	}
+	proxyConfig := NewDefaultConfig()
+	if f.configSetup != nil {
+		f.configSetup(proxyConfig)
+	}
+	if f.proxyType == "" {
+		f.proxyType = HTTP
+	}
+	switch f.proxyType {
+	case HTTP:
+		f.proxy = startProxy(t, proxyConfig)
+	case HTTPS:
+		f.proxy = startTLSProxyWithCert(t, proxyConfig, f.certificates.proxyCert)
+	}
+
+	if f.serversSetup == nil {
+		t.Fatal("Target servers must be setup in test fixture!")
+	}
+
+	f.servers = f.serversSetup(proxyConfig, f.certificates)
+	waitForStartup(t, f.proxy.Addr)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			if f.proxyType == HTTP {
+				return url.Parse("http://" + proxyHttpAddress)
+			} else {
+				return url.Parse("https://" + proxyHttpsAddress)
+			}
+		},
+	}
+	return &http.Client{Transport: tr}
+}
+
+func (f *testFixture) tearDown(t *testing.T) {
+	if f.proxy != nil {
+		f.proxy.Shutdown(context.TODO())
+	}
+	for _, s := range f.servers {
+		s.Shutdown(context.TODO())
 	}
 }
 
@@ -83,25 +156,22 @@ func TestLocalNetworkForbidden(t *testing.T) {
 }
 
 func TestProxy(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-
-	targetServer := startTargetServer(t)
-	defer targetServer.Shutdown(context.TODO())
-
-	waitForStartup(t, proxyHttpAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig) {
+			config.InsecureSkipCidrDenyList = true
+		},
+		serversSetup: func(config *ProxyConfig, certificates *certificateFixtures) []*http.Server {
+			var servers []*http.Server
+			httpServer := startTargetServer(t)
+			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, certificates.invalidHostnameServerCert)
+			return append(servers, httpServer, httpsServer)
 		},
 	}
-	client := &http.Client{Transport: tr}
+
+	client := fixture.setUp(t)
 
 	t.Run("Proxy 200 OK", func(t *testing.T) {
-		resp, err := client.Get("http://localhost:12080/target")
+		resp, err := client.Get(fmt.Sprintf("http://localhost:%s/target", httpTargetServerPort))
 		if err != nil {
 			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
 		}
@@ -115,7 +185,7 @@ func TestProxy(t *testing.T) {
 	})
 
 	t.Run("Proxy 404 Not Found", func(t *testing.T) {
-		resp, err := client.Get("http://localhost:12080/someRandomPath")
+		resp, err := client.Get(fmt.Sprintf("http://localhost:%s/someRandomPath", httpTargetServerPort))
 		if err != nil {
 			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
 		}
@@ -124,11 +194,8 @@ func TestProxy(t *testing.T) {
 		}
 	})
 
-	httpsServer := startTargetHTTPSServer(t)
-	defer httpsServer.Shutdown(context.TODO())
-
 	t.Run("HTTPS target using header fails due to invalid hostname in cert", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "http://localhost:12081", nil)
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s", httpsTargetServerPort), nil)
 		if err != nil {
 			t.Fatalf("Failed to create new request: %s\n", err)
 		}
@@ -141,6 +208,8 @@ func TestProxy(t *testing.T) {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
 		}
 	})
+
+	fixture.tearDown(t)
 }
 
 func TestHTTPS(t *testing.T) {
@@ -218,25 +287,18 @@ func TestHTTPS(t *testing.T) {
 }
 
 func TestHttpConnectNotAllowedByDefault(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
-	config.InsecureSkipCertVerification = true
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-
-	httpsServer := startTargetHTTPSServer(t)
-	defer httpsServer.Shutdown(context.TODO())
-
-	waitForStartup(t, proxyHttpAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig) {
+			config.InsecureSkipCidrDenyList = true
+			config.InsecureSkipCertVerification = true
+		},
+		serversSetup: func(config *ProxyConfig, certificates *certificateFixtures) []*http.Server {
+			target := startTargetHTTPSServerWithInMemoryCert(t, certificates.serverCert)
+			return []*http.Server{target}
 		},
 	}
-
-	client := &http.Client{Transport: tr}
-	_, err := client.Get("https://localhost:12081/target")
+	client := fixture.setUp(t)
+	_, err := client.Get(fmt.Sprintf("https://localhost:%s/target", httpsTargetServerPort))
 	if err == nil {
 		t.Error("Expected to get error because CONNECT is disallowed, instead got no error")
 	}
@@ -587,7 +649,7 @@ func startProxy(t *testing.T, p *ProxyConfig) *http.Server {
 	setupLogging()
 	p.Listeners = make([]ListenerConfig, 1, 1)
 	p.Listeners[0] = ListenerConfig{
-		Address: "127.0.0.1:11090",
+		Address: proxyHttpAddress,
 		Type:    HTTP,
 	}
 	proxy := CreateProxyServers(p)[0]
@@ -605,7 +667,7 @@ func startTLSProxy(t *testing.T, p *ProxyConfig) *http.Server {
 	setupLogging()
 	p.Listeners = make([]ListenerConfig, 1, 1)
 	p.Listeners[0] = ListenerConfig{
-		Address:  "127.0.0.1:11091",
+		Address:  proxyHttpsAddress,
 		Type:     HTTP,
 		CertFile: "certs/cert.pem",
 		KeyFile:  "certs/key.pem",
@@ -621,6 +683,25 @@ func startTLSProxy(t *testing.T, p *ProxyConfig) *http.Server {
 	return proxy
 }
 
+func startTLSProxyWithCert(t *testing.T, p *ProxyConfig, proxyCert *tls.Certificate) *http.Server {
+	setupLogging()
+	p.Listeners = make([]ListenerConfig, 1, 1)
+	p.Listeners[0] = ListenerConfig{
+		Address: proxyHttpsAddress,
+		Type:    HTTP,
+	}
+	proxy := CreateProxyServers(p)[0]
+	go func() {
+		config := &tls.Config{Certificates: []tls.Certificate{*proxyCert}}
+		listener, err := tls.Listen("tcp4", p.Listeners[0].Address, config)
+		if err != nil {
+			t.Fatalf("Could not start proxy listener: %s\n", err)
+		}
+		proxy.Serve(listener)
+	}()
+	return proxy
+}
+
 func startTargetServer(t *testing.T) *http.Server {
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
@@ -629,11 +710,13 @@ func startTargetServer(t *testing.T) *http.Server {
 	})
 
 	server := &http.Server{
-		Addr:    "127.0.0.1:12080",
+		Addr:    "127.0.0.1:" + httpTargetServerPort,
 		Handler: serveMux,
 	}
 	go func() {
-		server.ListenAndServe()
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			t.Fatalf("Failed to start target HTTP server: %s\n", err)
+		}
 	}()
 	return server
 }
@@ -655,6 +738,29 @@ func startTargetHTTPSServerWithCert(t *testing.T, certFile string, keyFile strin
 	go func() {
 		if err := server.ListenAndServeTLS(certFile, keyFile); err != http.ErrServerClosed {
 			t.Fatalf("HTTPS server failed to start: %s\n", err)
+		}
+	}()
+	return server
+}
+
+func startTargetHTTPSServerWithInMemoryCert(t *testing.T, serverCert *tls.Certificate) *http.Server {
+	serveMux := http.NewServeMux()
+	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Hello from target HTTPS")
+	})
+
+	server := &http.Server{
+		Addr:    "127.0.0.1:" + httpsTargetServerPort,
+		Handler: serveMux,
+	}
+	go func() {
+		config := &tls.Config{Certificates: []tls.Certificate{*serverCert}}
+		listener, err := tls.Listen("tcp4", server.Addr, config)
+		if err != nil {
+			t.Fatalf("Failed to listen on port %s: %s\n", httpsTargetServerPort, err)
+		}
+		if err := server.Serve(listener); err != http.ErrServerClosed {
+			t.Fatalf("HTTPS target server failed to start: %s\n", err)
 		}
 	}()
 	return server
