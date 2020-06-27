@@ -402,34 +402,22 @@ func (s *safeDialer) resolveIPPort(ctx context.Context, addr string) (string, er
 }
 
 func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (net.Conn, error) {
-	certAlias, ok := ctx.Value(clientCertKey).(string)
-	var getClientCert func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
-	if ok {
-		cert, ok := s.clientCerts[certAlias]
-		if !ok {
-			return nil, &proxyError{statusCode: http.StatusInternalServerError, message: "Programming error: Cert alias existence should have been checked upstack"}
-		}
-		getClientCert = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return &cert, nil
-		}
-	}
 	// We need the host here to set the SNI hostname, otherwise it incorrectly uses the IP address as the SNI
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
-	}
-	tlsConfig := &tls.Config{
-		ServerName:           host,
-		InsecureSkipVerify:   s.skipServerCertVerification,
-		GetClientCertificate: getClientCert,
-		RootCAs:              s.rootCerts,
 	}
 
 	ipPort, err := s.resolveIPPort(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	return tls.DialWithDialer(s.dialer, "tcp4", ipPort, tlsConfig)
+	conn, err := s.dialer.DialContext(ctx, "tcp4", ipPort)
+	if err != nil {
+		return nil, err
+	}
+	certAlias, _ := ctx.Value(clientCertKey).(string)
+	return s.doTLSHandshake(conn, host, certAlias)
 }
 
 func (s *safeDialer) doTLSHandshake(conn net.Conn, hostname string, certAlias string) (net.Conn, error) {
