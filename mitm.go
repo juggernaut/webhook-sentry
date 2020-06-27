@@ -26,6 +26,7 @@ type Mitmer struct {
 	issuerCertificate    *x509.Certificate
 	issuerPrivateKey     crypto.PrivateKey
 	generatedCertKeyPair *rsa.PrivateKey
+	doTLSHandshake       func(conn net.Conn, hostname string, certAlias string) (net.Conn, error)
 }
 
 func NewMitmer() (*Mitmer, error) {
@@ -88,18 +89,12 @@ func (m *Mitmer) doMitm(inboundConn net.Conn, outboundConn net.Conn, hostnameInR
 	}
 	// NOTE: remoteHostname will only be set after the inbound handshake is done, so we can't do
 	// inbound and outbound handshakes in parallel
-	// TODO: this is skipping mutual auth, should probably re-use safeDialer, but this will mean we delay
-	// TODO: outbound connection establishment until now
-	outboundTLSConfig := &tls.Config{
-		ServerName: remoteHostname,
-	}
-	outboundTLSConn := tls.Client(outboundConn, outboundTLSConfig)
-	defer outboundTLSConn.Close()
-	err = outboundTLSConn.Handshake()
+	handshakeConn, err := m.doTLSHandshake(outboundConn, remoteHostname, "default")
 	if err != nil {
 		log.Errorf("TLS Handshake failed on outbound connection: %s\n", err)
 		return
 	}
+	outboundTLSConn := handshakeConn.(*tls.Conn)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {

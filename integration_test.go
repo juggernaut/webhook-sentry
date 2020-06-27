@@ -156,19 +156,21 @@ func TestHTTPS(t *testing.T) {
 		}
 	})
 
-	t.Run("Successful CONNECT proxy", func(t *testing.T) {
-		// Notice we don't add any header here, and target URL is https, however we
-		// need to disable cert validation on the client (not proxy) since proxy is now
-		// transparent
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-		resp, err := client.Get("https://localhost:12081/target")
-		if err != nil {
-			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
-		}
-		if resp.StatusCode != 200 {
-			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
-		}
-	})
+	if false {
+		t.Run("Successful CONNECT proxy", func(t *testing.T) {
+			// Notice we don't add any header here, and target URL is https, however we
+			// need to disable cert validation on the client (not proxy) since proxy is now
+			// transparent
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+			resp, err := client.Get("https://localhost:12081/target")
+			if err != nil {
+				t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+			}
+			if resp.StatusCode != 200 {
+				t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+			}
+		})
+	}
 
 	t.Run("Successful proxy to HTTPS target that checks client cert", func(t *testing.T) {
 		req, err := http.NewRequest("GET", "http://localhost:12089/target", nil)
@@ -194,6 +196,69 @@ func TestHTTPS(t *testing.T) {
 		}
 	})
 
+}
+
+func TestHttpConnectNotAllowedByDefault(t *testing.T) {
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	config.InsecureSkipCertVerification = true
+	proxy := startProxy(t, config)
+	defer proxy.Shutdown(context.TODO())
+
+	httpsServer := startTargetHTTPSServer(t)
+	defer httpsServer.Shutdown(context.TODO())
+
+	waitForStartup(t, proxyHttpAddress)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+	}
+
+	client := &http.Client{Transport: tr}
+	_, err := client.Get("https://localhost:12081/target")
+	if err == nil {
+		t.Error("Expected to get error because CONNECT is disallowed, instead got no error")
+	}
+	if !strings.Contains(err.Error(), "Method Not Allowed") {
+		t.Errorf("Expected error '%s' to contain string 'Method Not Allowed'", err.Error())
+	}
+}
+
+func TestMitmHttpConnect(t *testing.T) {
+	config := NewDefaultConfig()
+	config.InsecureSkipCidrDenyList = true
+	// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
+	config.InsecureSkipCertVerification = true
+	config.MitmIssuerCertFile = "certs/cert.pem"
+	config.MitmIssuerKeyFile = "certs/key.pem"
+	config.loadMitmIssuerCert()
+	proxy := startProxy(t, config)
+	defer proxy.Shutdown(context.TODO())
+
+	httpsServer := startTargetHTTPSServer(t)
+	defer httpsServer.Shutdown(context.TODO())
+
+	waitForStartup(t, proxyHttpAddress)
+
+	tr := &http.Transport{
+		Proxy: func(r *http.Request) (*url.URL, error) {
+			return url.Parse("http://127.0.0.1:11090")
+		},
+		TLSClientConfig: &tls.Config{
+			RootCAs: getRootCAs(t),
+		},
+	}
+
+	client := &http.Client{Transport: tr}
+	resp, err := client.Get("https://localhost:12081/target")
+	if err != nil {
+		t.Errorf("Got error requesting CONNECT to HTTPS target: %s", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected status code 200, got status code %d", resp.StatusCode)
+	}
 }
 
 func TestOutboundConnectionLifetime(t *testing.T) {
@@ -303,6 +368,18 @@ func TestCustomRootCA(t *testing.T) {
 		}
 	})
 
+}
+
+func getRootCAs(t *testing.T) *x509.CertPool {
+	pemBytes, err := ioutil.ReadFile("certs/cert.pem")
+	if err != nil {
+		t.Fatalf("Failed to read root CA certificate: %s", err)
+	}
+	rootCerts := x509.NewCertPool()
+	if !rootCerts.AppendCertsFromPEM(pemBytes) {
+		t.Fatal("Failed to append certs from downloaded PEM")
+	}
+	return rootCerts
 }
 
 func TestHTTPSListener(t *testing.T) {

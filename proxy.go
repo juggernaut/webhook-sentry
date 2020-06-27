@@ -100,6 +100,7 @@ func CreateProxyServers(proxyConfig *ProxyConfig) []*http.Server {
 			log.Fatalf("Fatal error trying to generate keys for MITM: %s", err)
 		}
 		mitmer.dialContext = sd.DialContext
+		mitmer.doTLSHandshake = sd.doTLSHandshake
 		mitmer.issuerPrivateKey = proxyConfig.MitmIssuerCert.PrivateKey
 		x509Cert, err := x509.ParseCertificate(proxyConfig.MitmIssuerCert.Certificate[0])
 		if err != nil {
@@ -429,6 +430,32 @@ func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (
 		return nil, err
 	}
 	return tls.DialWithDialer(s.dialer, "tcp4", ipPort, tlsConfig)
+}
+
+func (s *safeDialer) doTLSHandshake(conn net.Conn, hostname string, certAlias string) (net.Conn, error) {
+	var clientCert *tls.Certificate
+	if certAlias != "" {
+		cert, ok := s.clientCerts[certAlias]
+		if ok {
+			clientCert = &cert
+		}
+	}
+	tlsConfig := &tls.Config{
+		ServerName:         hostname,
+		InsecureSkipVerify: s.skipServerCertVerification,
+		GetClientCertificate: func(requestInfo *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return clientCert, nil
+		},
+		RootCAs: s.rootCerts,
+	}
+	tlsConn := tls.Client(conn, tlsConfig)
+	// NOTE: this effectively makes the total timeout for a TLS conn (2 * Config.Timeout)
+	tlsConn.SetDeadline(time.Now().Add(s.dialer.Timeout))
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, err
+	}
+	tlsConn.SetDeadline(time.Time{})
+	return tlsConn, nil
 }
 
 func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
