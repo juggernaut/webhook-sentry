@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -18,6 +19,40 @@ import (
 
 const proxyHttpAddress = "127.0.0.1:11090"
 const proxyHttpsAddress = "127.0.0.1:11091"
+
+type certificateFixtures struct {
+	rootCAs          *x509.CertPool
+	rootCAPrivateKey crypto.PrivateKey
+	serverCert       *tls.Certificate
+	clientCert       *tls.Certificate
+}
+
+var fixtures *certificateFixtures
+
+func newCertificateFixtures(t *testing.T) *certificateFixtures {
+	rootCertKey, rootCert, err := generateRootCACert()
+	if err != nil {
+		t.Fatalf("Error generating root CA cert: %s", err)
+	}
+	certPool := x509.NewCertPool()
+	certPool.AddCert(rootCert)
+
+	serverCert, err := generateLeafCert("localhost", rootCert, rootCertKey, false)
+	if err != nil {
+		t.Fatalf("Error generating server cert: %s", err)
+	}
+
+	clientCert, err := generateLeafCert("wh-client.com", rootCert, rootCertKey, true)
+	if err != nil {
+		t.Fatalf("Error generating client cert: %s", err)
+	}
+	return &certificateFixtures{
+		rootCAs:          certPool,
+		rootCAPrivateKey: rootCertKey,
+		serverCert:       serverCert,
+		clientCert:       clientCert,
+	}
+}
 
 func TestLocalNetworkForbidden(t *testing.T) {
 	proxy := startProxy(t, NewDefaultConfig())
@@ -112,16 +147,16 @@ func TestHTTPS(t *testing.T) {
 	config := NewDefaultConfig()
 	config.InsecureSkipCidrDenyList = true
 	config.InsecureSkipCertVerification = true
-	config.ClientCertFile = "certs/clientcert.pem"
-	config.ClientKeyFile = "certs/clientkey.pem"
-	config.loadClientCert()
+	fixtures := newCertificateFixtures(t)
+	config.ClientCerts = make(map[string]tls.Certificate)
+	config.ClientCerts["default"] = *fixtures.clientCert
 	proxy := startProxy(t, config)
 	defer proxy.Shutdown(context.TODO())
 
 	httpsServer := startTargetHTTPSServer(t)
 	defer httpsServer.Shutdown(context.TODO())
 
-	httpsWithClientCertCheck := startTargetHTTPSServerWithClientCertCheck(t)
+	httpsWithClientCertCheck := startTargetHTTPSServerWithClientCertCheck(t, fixtures.serverCert, fixtures.rootCAs)
 	defer httpsWithClientCertCheck.Shutdown(context.TODO())
 
 	waitForStartup(t, proxyHttpAddress)
@@ -155,22 +190,6 @@ func TestHTTPS(t *testing.T) {
 			t.Errorf("Expected string 'Hello from target HTTPS' in response, but was %s\n", buf.String())
 		}
 	})
-
-	if false {
-		t.Run("Successful CONNECT proxy", func(t *testing.T) {
-			// Notice we don't add any header here, and target URL is https, however we
-			// need to disable cert validation on the client (not proxy) since proxy is now
-			// transparent
-			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-			resp, err := client.Get("https://localhost:12081/target")
-			if err != nil {
-				t.Errorf("Error in GET request to target server via proxy: %s\n", err)
-			}
-			if resp.StatusCode != 200 {
-				t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
-			}
-		})
-	}
 
 	t.Run("Successful proxy to HTTPS target that checks client cert", func(t *testing.T) {
 		req, err := http.NewRequest("GET", "http://localhost:12089/target", nil)
@@ -681,7 +700,7 @@ func startNeverSendsBodyServer(t *testing.T) {
 	bufw.Flush()
 }
 
-func startTargetHTTPSServerWithClientCertCheck(t *testing.T) *http.Server {
+func startTargetHTTPSServerWithClientCertCheck(t *testing.T, serverCert *tls.Certificate, rootCAs *x509.CertPool) *http.Server {
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "Hello from target HTTPS with client cert check")
@@ -691,24 +710,10 @@ func startTargetHTTPSServerWithClientCertCheck(t *testing.T) *http.Server {
 		Addr:    "127.0.0.1:12089",
 		Handler: serveMux,
 	}
-	cert, err := tls.LoadX509KeyPair("certs/cert.pem", "certs/key.pem")
-	if err != nil {
-		t.Fatalf("Failed to load server certificate key pair %s\n", err)
-	}
-	clientCACertPool := x509.NewCertPool()
-	// This is a little confusing, but the server cert is a self-signed cert that is used to
-	// sign the client cert
-	caCertBytes, err := ioutil.ReadFile("certs/cert.pem")
-	if err != nil {
-		t.Fatalf("Failed to read CA cert %s\n", err)
-	}
-	if !clientCACertPool.AppendCertsFromPEM(caCertBytes) {
-		t.Fatal("Failed to append PEM cert to CA cert pool")
-	}
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+		Certificates: []tls.Certificate{*serverCert},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    clientCACertPool,
+		ClientCAs:    rootCAs,
 	}
 
 	go func() {
