@@ -92,33 +92,32 @@ func CreateProxyServers(proxyConfig *ProxyConfig) []*http.Server {
 		DialTLSContext:     sd.DialTLSContext,
 	}
 
+	var mitmer *Mitmer
+	var err error
+	if proxyConfig.MitmIssuerCert != nil {
+		mitmer, err = NewMitmer()
+		if err != nil {
+			log.Fatalf("Fatal error trying to generate keys for MITM: %s", err)
+		}
+		mitmer.dialContext = sd.DialContext
+		mitmer.issuerPrivateKey = proxyConfig.MitmIssuerCert.PrivateKey
+		x509Cert, err := x509.ParseCertificate(proxyConfig.MitmIssuerCert.Certificate[0])
+		if err != nil {
+			log.Fatalf("Invalid X509 MITM issuer certificate: %s\n", err)
+		}
+		mitmer.issuerCertificate = x509Cert
+	}
+
 	var proxyServers []*http.Server
 	for _, listenerConfig := range proxyConfig.Listeners {
-		proxyServers = append(proxyServers, newProxyServer(listenerConfig, proxyConfig, sd, transport))
+		proxyServers = append(proxyServers, newProxyServer(listenerConfig, proxyConfig, sd, transport, mitmer))
 	}
 	return proxyServers
 }
 
-func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd *safeDialer, rt http.RoundTripper) *http.Server {
-	// TODO: mitmer must be a singleton, takings shortcut for no
-	mitmer, err := NewMitmer()
-	if err != nil {
-		panic(err)
-	}
-	mitmer.dialContext = sd.DialContext
-	cert, err := tls.LoadX509KeyPair("certs/cert.pem", "certs/key.pem")
-	if err != nil {
-		panic(err)
-	}
-	mitmer.issuerPrivateKey = cert.PrivateKey
-	x509Cert, err := x509.ParseCertificate(cert.Certificate[0])
-	if err != nil {
-		panic(err)
-	}
-	mitmer.issuerCertificate = x509Cert
+func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd *safeDialer, rt http.RoundTripper, mitmer *Mitmer) *http.Server {
 	handler := &ProxyHTTPHandler{
 		roundTripper:               rt,
-		dialContext:                sd.DialContext,
 		outboundConnectionLifetime: proxyConfig.ConnectionLifetime,
 		idleReadTimeout:            proxyConfig.ReadTimeout,
 		maxContentLength:           proxyConfig.MaxResponseBodySize,
@@ -135,7 +134,6 @@ func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd 
 // ProxyHTTPHandler some struct
 type ProxyHTTPHandler struct {
 	roundTripper               http.RoundTripper
-	dialContext                func(ctx context.Context, network, addr string) (net.Conn, error)
 	outboundConnectionLifetime time.Duration
 	idleReadTimeout            time.Duration
 	currentInboundConns        uint32
@@ -145,6 +143,11 @@ type ProxyHTTPHandler struct {
 
 func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
+		// We only allow CONNECT if we have a configured MITM issuer certificate
+		if p.mitmer == nil {
+			http.Error(w, "CONNECT method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		p.mitmer.HandleHttpConnect(w, r)
 	} else {
 		ctx, cancel := context.WithTimeout(context.TODO(), p.outboundConnectionLifetime)

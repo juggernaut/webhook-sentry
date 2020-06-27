@@ -42,6 +42,9 @@ type ProxyConfig struct {
 	ClientKeyFile                string                     `yaml:"clientKeyFile"`
 	ClientCerts                  map[string]tls.Certificate `yaml:"-"`
 	RootCACerts                  *x509.CertPool             `yaml:"-"` // TODO: not taking a file override yet
+	MitmIssuerCertFile           string                     `yaml:"mitmIssuerCertFile"`
+	MitmIssuerKeyFile            string                     `yaml:"mitmIssuerKeyFile"`
+	MitmIssuerCert               *tls.Certificate           `yaml:"-"`
 }
 
 type Protocol string
@@ -87,7 +90,7 @@ func validateListeners(listeners []ListenerConfig) error {
 			return err
 		}
 		if l.Type == HTTPS && (l.CertFile == "" || l.KeyFile == "") {
-			return fmt.Errorf("Both certificate file and private key file must be specified for listener %s\n", l.Address)
+			return fmt.Errorf("Both certificate file and private key file must be specified for listener %s", l.Address)
 		}
 	}
 	return nil
@@ -112,19 +115,40 @@ func validateAddress(address string) error {
 
 func (p *ProxyConfig) loadClientCert() error {
 	p.ClientCerts = make(map[string]tls.Certificate)
-	if p.ClientCertFile == "" && p.ClientKeyFile == "" {
-		return nil
-	} else if p.ClientCertFile != "" && p.ClientKeyFile == "" {
-		return errors.New("clientKeyFile must also be specified if clientCertFile is")
-	} else if p.ClientCertFile == "" && p.ClientKeyFile != "" {
-		return errors.New("clientCertFile must also be specified if clientKeyFile is")
+	cert, err := loadCert(p.ClientCertFile, p.ClientKeyFile, "client")
+	if err != nil {
+		return err
+	}
+	if cert != nil {
+		p.ClientCerts["default"] = *cert
+	}
+	return nil
+}
+
+func (p *ProxyConfig) loadMitmIssuerCert() error {
+	cert, err := loadCert(p.MitmIssuerCertFile, p.MitmIssuerKeyFile, "mitmIssuer")
+	if err != nil {
+		return err
+	}
+	if cert != nil {
+		p.MitmIssuerCert = cert
+	}
+	return nil
+}
+
+func loadCert(certFile string, keyFile string, certName string) (*tls.Certificate, error) {
+	if certFile == "" && keyFile == "" {
+		return nil, nil
+	} else if certFile != "" && keyFile == "" {
+		return nil, fmt.Errorf("%sKeyFile must also be specified if %sCertFile is", certName, certName)
+	} else if certFile == "" && keyFile != "" {
+		return nil, fmt.Errorf("%sCertFile must also be specified if %sKeyFile is", certName, certName)
 	} else {
-		clientCert, err := tls.LoadX509KeyPair(p.ClientCertFile, p.ClientKeyFile)
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 		if err != nil {
-			return fmt.Errorf("Error loading client certificate: %s", err)
+			return nil, fmt.Errorf("Error loading %s certificate: %s", certName, err)
 		}
-		p.ClientCerts["default"] = clientCert
-		return nil
+		return &cert, err
 	}
 }
 
@@ -162,6 +186,9 @@ func UnmarshalConfig(configData []byte) (*ProxyConfig, error) {
 		return nil, fmt.Errorf("Invalid configuration: %s", err)
 	}
 	if err := config.loadClientCert(); err != nil {
+		return nil, err
+	}
+	if err := config.loadMitmIssuerCert(); err != nil {
 		return nil, err
 	}
 	rootCerts, err := getRootCABundle()
