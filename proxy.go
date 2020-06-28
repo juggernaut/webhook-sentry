@@ -431,7 +431,12 @@ func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (
 	if err != nil {
 		return nil, err
 	}
-	certAlias, _ := ctx.Value(clientCertKey).(string)
+	certAlias, ok := ctx.Value(clientCertKey).(string)
+	if ok {
+		if _, found := s.clientCerts[certAlias]; !found {
+			return nil, &proxyError{statusCode: http.StatusInternalServerError, message: fmt.Sprintf("Programming error; no cert with alias %s, this check should have been made upstack", certAlias)}
+		}
+	}
 	return s.doTLSHandshake(conn, host, certAlias)
 }
 
@@ -439,10 +444,9 @@ func (s *safeDialer) doTLSHandshake(conn net.Conn, hostname string, certAlias st
 	var clientCert tls.Certificate
 	if certAlias != "" {
 		cert, ok := s.clientCerts[certAlias]
-		if !ok {
-			return nil, &proxyError{statusCode: http.StatusInternalServerError, message: fmt.Sprintf("Programming error; no cert with alias %s, this check should have been made upstack", certAlias)}
+		if ok {
+			clientCert = cert
 		}
-		clientCert = cert
 	}
 	tlsConfig := &tls.Config{
 		ServerName:         hostname,
