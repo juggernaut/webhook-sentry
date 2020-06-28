@@ -283,11 +283,13 @@ func handleError(w http.ResponseWriter, err error) int {
 		if v.Timeout() {
 			http.Error(w, "Request to target timed out", http.StatusBadGateway)
 			return http.StatusBadGateway
-		} else {
-			log.Warnf("Unexpected error while proxying request: %s\n", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return http.StatusInternalServerError
 		}
+		if opErr, ok := v.(*net.OpError); ok {
+			return handleNetOpError(w, *opErr)
+		}
+		log.Warnf("Unexpected error while proxying request: %s\n", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return http.StatusInternalServerError
 	case x509.CertificateInvalidError, x509.HostnameError:
 		http.Error(w, v.Error(), http.StatusBadGateway)
 		return http.StatusBadGateway
@@ -296,6 +298,19 @@ func handleError(w http.ResponseWriter, err error) int {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
+}
+
+func handleNetOpError(w http.ResponseWriter, err net.OpError) int {
+	wrapped := err.Unwrap()
+	// This is hacky, but the TLS alert errors aren't exported
+	if strings.HasPrefix(wrapped.Error(), "tls:") {
+		log.Infof("TLS handshake error: %s\n", wrapped)
+		http.Error(w, "TLS handshake error", http.StatusBadGateway)
+		return http.StatusBadGateway
+	}
+	log.Warnf("Unexpected error while proxying request: %s\n", wrapped)
+	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+	return http.StatusInternalServerError
 }
 
 func logRequest(r *http.Request, responseCode int, responseTime time.Duration) {
@@ -421,18 +436,22 @@ func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (
 }
 
 func (s *safeDialer) doTLSHandshake(conn net.Conn, hostname string, certAlias string) (net.Conn, error) {
-	var clientCert *tls.Certificate
+	var clientCert tls.Certificate
 	if certAlias != "" {
 		cert, ok := s.clientCerts[certAlias]
-		if ok {
-			clientCert = &cert
+		if !ok {
+			return nil, &proxyError{statusCode: http.StatusInternalServerError, message: fmt.Sprintf("Programming error; no cert with alias %s, this check should have been made upstack", certAlias)}
 		}
+		clientCert = cert
 	}
 	tlsConfig := &tls.Config{
 		ServerName:         hostname,
 		InsecureSkipVerify: s.skipServerCertVerification,
 		GetClientCertificate: func(requestInfo *tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return clientCert, nil
+			if len(clientCert.Certificate) == 0 {
+				log.Warn("Client certificate requested by server, but we don't have one")
+			}
+			return &clientCert, nil
 		},
 		RootCAs: s.rootCerts,
 	}
