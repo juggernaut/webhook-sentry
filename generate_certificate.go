@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -33,7 +34,6 @@ func generateCertificate(hostname string, key crypto.PrivateKey, notBefore time.
 	// the context of TLS this KeyUsage is particular to RSA key exchange and
 	// authentication.
 	if _, isRSA := key.(*rsa.PrivateKey); isRSA {
-		fmt.Println("Yes this is RSA!!!")
 		keyUsage |= x509.KeyUsageKeyEncipherment
 	}
 

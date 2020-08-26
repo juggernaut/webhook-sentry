@@ -324,33 +324,6 @@ func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 }
 
 func TestMitmHttpConnect(t *testing.T) {
-	/*
-		config := NewDefaultConfig()
-		config.InsecureSkipCidrDenyList = true
-		// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
-		config.InsecureSkipCertVerification = true
-		config.MitmIssuerCertFile = "certs/cert.pem"
-		config.MitmIssuerKeyFile = "certs/key.pem"
-		config.loadMitmIssuerCert()
-		proxy := startProxy(t, config)
-		defer proxy.Shutdown(context.TODO())
-
-		httpsServer := startTargetHTTPSServer(t)
-		defer httpsServer.Shutdown(context.TODO())
-
-		waitForStartup(t, proxyHttpAddress)
-
-		tr := &http.Transport{
-			Proxy: func(r *http.Request) (*url.URL, error) {
-				return url.Parse("http://127.0.0.1:11090")
-			},
-			TLSClientConfig: &tls.Config{
-				RootCAs: getRootCAs(t),
-			},
-		}
-
-		client := &http.Client{Transport: tr}
-	*/
 	fixture := &testFixture{
 		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
