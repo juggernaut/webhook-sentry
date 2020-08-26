@@ -19,7 +19,7 @@ func generateKeyPair() (crypto.PrivateKey, error) {
 	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
 
-func generateCertificate(hostname string, key crypto.PrivateKey, notBefore time.Time, notAfter time.Time, issuerCertificate *x509.Certificate, issuerPrivateKey crypto.PrivateKey, isClientCert bool, isCA bool) ([]byte, error) {
+func generateCertificate(hostname string, organizationName string, key crypto.PrivateKey, notBefore time.Time, notAfter time.Time, issuerCertificate *x509.Certificate, issuerPrivateKey crypto.PrivateKey, isClientCert bool, isCA bool) ([]byte, error) {
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
@@ -37,15 +37,19 @@ func generateCertificate(hostname string, key crypto.PrivateKey, notBefore time.
 		keyUsage |= x509.KeyUsageKeyEncipherment
 	}
 
-	extKeyUsage := x509.ExtKeyUsageServerAuth
-	if isClientCert {
+	var extKeyUsage x509.ExtKeyUsage
+	if isCA {
+		extKeyUsage = x509.ExtKeyUsageAny
+	} else if isClientCert {
 		extKeyUsage = x509.ExtKeyUsageClientAuth
+	} else {
+		extKeyUsage = x509.ExtKeyUsageServerAuth
 	}
 
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"Acme Co"},
+			Organization: []string{organizationName},
 		},
 		NotBefore: notBefore,
 		NotAfter:  notAfter,
@@ -85,7 +89,7 @@ func generateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {
 	}
 	notBefore := time.Now().Add(time.Duration(-1) * time.Hour)
 	notAfter := time.Now().Add(time.Duration(1) * time.Hour)
-	certBytes, err := generateCertificate("wh-sentry-root.com", key, notBefore, notAfter, nil, nil, false, true)
+	certBytes, err := generateCertificate("wh-sentry-root.com", "WH Sentry Root", key, notBefore, notAfter, nil, nil, true, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -96,7 +100,7 @@ func generateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {
 	return key, cert, nil
 }
 
-func generateLeafCert(hostname string, issuerCert *x509.Certificate, issuerKey crypto.PrivateKey, isClient bool) (*tls.Certificate, error) {
+func generateLeafCert(hostname string, organizationName string, issuerCert *x509.Certificate, issuerKey crypto.PrivateKey, isClient bool) (*tls.Certificate, error) {
 	key, err := generateKeyPair()
 	if err != nil {
 		return nil, err
@@ -104,7 +108,7 @@ func generateLeafCert(hostname string, issuerCert *x509.Certificate, issuerKey c
 	notBefore := time.Now().Add(time.Duration(-1) * time.Minute)
 	notAfter := time.Now().Add(time.Duration(30) * time.Minute)
 
-	derBytes, err := generateCertificate(hostname, key, notBefore, notAfter, issuerCert, issuerKey, isClient, false)
+	derBytes, err := generateCertificate(hostname, organizationName, key, notBefore, notAfter, issuerCert, issuerKey, isClient, false)
 	if err != nil {
 		return nil, err
 	}

@@ -48,22 +48,22 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 		t.Fatalf("Error converting x509 to TLS certificate: %s", err)
 	}
 
-	serverCert, err := generateLeafCert("localhost", rootCert, rootCertKey, false)
+	serverCert, err := generateLeafCert("localhost", "WH Sentry Test Server", rootCert, rootCertKey, false)
 	if err != nil {
 		t.Fatalf("Error generating server cert: %s", err)
 	}
 
-	invalidHostnameServerCert, err := generateLeafCert("wh-target-server.com", rootCert, rootCertKey, false)
+	invalidHostnameServerCert, err := generateLeafCert("wh-target-server.com", "WH Sentry Test Server", rootCert, rootCertKey, false)
 	if err != nil {
 		t.Fatalf("Error generating server cert: %s", err)
 	}
 
-	proxyCert, err := generateLeafCert("localhost", rootCert, rootCertKey, false)
+	proxyCert, err := generateLeafCert("localhost", "WH Sentry Proxy", rootCert, rootCertKey, false)
 	if err != nil {
 		t.Fatalf("Error generating server cert: %s", err)
 	}
 
-	clientCert, err := generateLeafCert("wh-client.com", rootCert, rootCertKey, true)
+	clientCert, err := generateLeafCert("wh-client.com", "WH Sentry Client", rootCert, rootCertKey, true)
 	if err != nil {
 		t.Fatalf("Error generating client cert: %s", err)
 	}
