@@ -28,6 +28,7 @@ const (
 type certificateFixtures struct {
 	rootCAs                   *x509.CertPool
 	rootCAPrivateKey          crypto.PrivateKey
+	rootCACert                *tls.Certificate
 	proxyCert                 *tls.Certificate
 	serverCert                *tls.Certificate
 	invalidHostnameServerCert *tls.Certificate
@@ -41,6 +42,11 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 	}
 	certPool := x509.NewCertPool()
 	certPool.AddCert(rootCert)
+
+	rootCACert, err := x509ToTLSCertificate(rootCert, rootCertKey)
+	if err != nil {
+		t.Fatalf("Error converting x509 to TLS certificate: %s", err)
+	}
 
 	serverCert, err := generateLeafCert("localhost", rootCert, rootCertKey, false)
 	if err != nil {
@@ -64,6 +70,7 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 	return &certificateFixtures{
 		rootCAs:                   certPool,
 		rootCAPrivateKey:          rootCertKey,
+		rootCACert:                rootCACert,
 		serverCert:                serverCert,
 		invalidHostnameServerCert: invalidHostnameServerCert,
 		proxyCert:                 proxyCert,
@@ -72,12 +79,13 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 }
 
 type testFixture struct {
-	certificates *certificateFixtures
-	configSetup  func(*ProxyConfig, *certificateFixtures)
-	serversSetup func(*certificateFixtures) []*http.Server
-	proxy        *http.Server
-	proxyType    Protocol
-	servers      []*http.Server
+	certificates   *certificateFixtures
+	configSetup    func(*ProxyConfig, *certificateFixtures)
+	serversSetup   func(*certificateFixtures) []*http.Server
+	transportSetup func(*http.Transport, *certificateFixtures)
+	proxy          *http.Server
+	proxyType      Protocol
+	servers        []*http.Server
 }
 
 func (f *testFixture) setUp(t *testing.T) *http.Client {
@@ -113,6 +121,9 @@ func (f *testFixture) setUp(t *testing.T) *http.Client {
 				return url.Parse("https://" + proxyHttpsAddress)
 			}
 		},
+	}
+	if f.transportSetup != nil {
+		f.transportSetup(tr, f.certificates)
 	}
 	return &http.Client{Transport: tr}
 }
@@ -313,38 +324,62 @@ func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 }
 
 func TestMitmHttpConnect(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
-	// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
-	config.InsecureSkipCertVerification = true
-	config.MitmIssuerCertFile = "certs/cert.pem"
-	config.MitmIssuerKeyFile = "certs/key.pem"
-	config.loadMitmIssuerCert()
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
+	/*
+		config := NewDefaultConfig()
+		config.InsecureSkipCidrDenyList = true
+		// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
+		config.InsecureSkipCertVerification = true
+		config.MitmIssuerCertFile = "certs/cert.pem"
+		config.MitmIssuerKeyFile = "certs/key.pem"
+		config.loadMitmIssuerCert()
+		proxy := startProxy(t, config)
+		defer proxy.Shutdown(context.TODO())
 
-	httpsServer := startTargetHTTPSServer(t)
-	defer httpsServer.Shutdown(context.TODO())
+		httpsServer := startTargetHTTPSServer(t)
+		defer httpsServer.Shutdown(context.TODO())
 
-	waitForStartup(t, proxyHttpAddress)
+		waitForStartup(t, proxyHttpAddress)
 
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+		tr := &http.Transport{
+			Proxy: func(r *http.Request) (*url.URL, error) {
+				return url.Parse("http://127.0.0.1:11090")
+			},
+			TLSClientConfig: &tls.Config{
+				RootCAs: getRootCAs(t),
+			},
+		}
+
+		client := &http.Client{Transport: tr}
+	*/
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+			// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
+			config.InsecureSkipCertVerification = true
+			config.MitmIssuerCert = c.rootCACert
 		},
-		TLSClientConfig: &tls.Config{
-			RootCAs: getRootCAs(t),
+		serversSetup: func(c *certificateFixtures) []*http.Server {
+			server := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
+			return []*http.Server{server}
+		},
+		transportSetup: func(tr *http.Transport, c *certificateFixtures) {
+			tr.TLSClientConfig = &tls.Config{
+				RootCAs: c.rootCAs,
+			}
 		},
 	}
 
-	client := &http.Client{Transport: tr}
-	resp, err := client.Get("https://localhost:12081/target")
+	client := fixture.setUp(t)
+
+	resp, err := client.Get(fmt.Sprintf("https://localhost:%s/target", httpsTargetServerPort))
 	if err != nil {
-		t.Errorf("Got error requesting CONNECT to HTTPS target: %s", err)
+		t.Fatalf("Got error requesting CONNECT to HTTPS target: %s", err)
 	}
 	if resp.StatusCode != 200 {
-		t.Errorf("Expected status code 200, got status code %d", resp.StatusCode)
+		t.Fatalf("Expected status code 200, got status code %d", resp.StatusCode)
 	}
+
+	fixture.tearDown(t)
 }
 
 func TestOutboundConnectionLifetime(t *testing.T) {

@@ -113,3 +113,15 @@ func generateLeafCert(hostname string, issuerCert *x509.Certificate, issuerKey c
 	cert, err := tls.X509KeyPair(certPemBytes, privKeyPemBytes)
 	return &cert, err
 }
+
+func x509ToTLSCertificate(x509Cert *x509.Certificate, privateKey crypto.PrivateKey) (*tls.Certificate, error) {
+	certPemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: x509Cert.Raw})
+
+	privKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return nil, err
+	}
+	privKeyPemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privKeyBytes})
+	cert, err := tls.X509KeyPair(certPemBytes, privKeyPemBytes)
+	return &cert, err
+}
