@@ -26,9 +26,15 @@ func generateCertificate(hostname string, key crypto.PrivateKey, notBefore time.
 		return nil, err
 	}
 
+	// ECDSA, ED25519 and RSA subject keys should have the DigitalSignature
+	// KeyUsage bits set in the x509.Certificate template
 	keyUsage := x509.KeyUsageDigitalSignature
-	if !isClientCert {
-		keyUsage = keyUsage | x509.KeyUsageKeyEncipherment
+	// Only RSA subject keys should have the KeyEncipherment KeyUsage bits set. In
+	// the context of TLS this KeyUsage is particular to RSA key exchange and
+	// authentication.
+	if _, isRSA := key.(*rsa.PrivateKey); isRSA {
+		fmt.Println("Yes this is RSA!!!")
+		keyUsage |= x509.KeyUsageKeyEncipherment
 	}
 
 	extKeyUsage := x509.ExtKeyUsageServerAuth
@@ -79,7 +85,7 @@ func generateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {
 	}
 	notBefore := time.Now().Add(time.Duration(-1) * time.Hour)
 	notAfter := time.Now().Add(time.Duration(1) * time.Hour)
-	certBytes, err := generateCertificate("wh-sentry-root.com", key, notBefore, notAfter, nil, nil, true, true)
+	certBytes, err := generateCertificate("wh-sentry-root.com", key, notBefore, notAfter, nil, nil, false, true)
 	if err != nil {
 		return nil, nil, err
 	}

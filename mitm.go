@@ -122,7 +122,7 @@ func (m *Mitmer) generateCert(hostname string) (*tls.Certificate, error) {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"Acme Co"},
+			Organization: []string{"WHSentry Co"},
 		},
 		NotBefore: notBefore,
 		NotAfter:  notAfter,
