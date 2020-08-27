@@ -619,7 +619,6 @@ func waitForStartup(t *testing.T, address string) {
 				i++
 			}
 		} else {
-			t.Log("Proxy started, now running tests")
 			conn.Close()
 			break
 		}
