@@ -58,7 +58,7 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 		t.Fatalf("Error generating server cert: %s", err)
 	}
 
-	proxyCert, err := generateLeafCert("localhost", "WH Sentry Proxy", rootCert, rootCertKey, false)
+	proxyCert, err := generateLeafCert("127.0.0.1", "WH Sentry Proxy", rootCert, rootCertKey, false)
 	if err != nil {
 		t.Fatalf("Error generating server cert: %s", err)
 	}
@@ -321,6 +321,7 @@ func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 	if !strings.Contains(err.Error(), "Method Not Allowed") {
 		t.Errorf("Expected error '%s' to contain string 'Method Not Allowed'", err.Error())
 	}
+	fixture.tearDown(t)
 }
 
 func TestMitmHttpConnect(t *testing.T) {
@@ -357,23 +358,21 @@ func TestMitmHttpConnect(t *testing.T) {
 
 func TestOutboundConnectionLifetime(t *testing.T) {
 
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
-	config.ConnectionLifetime = time.Second * 5
-	config.ReadTimeout = time.Second * 2
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-	go startSlowToRespondServer(t)
-	go startNeverSendsBodyServer(t)
-
-	waitForStartup(t, proxyHttpAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+			config.ConnectionLifetime = time.Second * 5
+			config.ReadTimeout = time.Second * 2
+		},
+		serversSetup: func(c *certificateFixtures) []*http.Server {
+			// These are not http.Server unfortunately
+			go startSlowToRespondServer(t)
+			go startNeverSendsBodyServer(t)
+			return []*http.Server{}
 		},
 	}
-	client := &http.Client{Transport: tr}
+
+	client := fixture.setUp(t)
 
 	t.Run("test connection lifetime", func(t *testing.T) {
 		resp, err := client.Get("http://localhost:14400/")
@@ -406,38 +405,25 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 
 	})
 
+	fixture.tearDown(t)
+
 }
 
-func TestCustomRootCA(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
-	// This is false by default, but make it explicit for clarity
-	config.InsecureSkipCertVerification = false
-	pemBytes, err := ioutil.ReadFile("certs/cert.pem")
-	if err != nil {
-		t.Fatalf("Failed to read root CA certificate: %s", err)
-	}
-	rootCerts := x509.NewCertPool()
-	if !rootCerts.AppendCertsFromPEM(pemBytes) {
-		t.Fatal("Failed to append certs from downloaded PEM")
-	}
-	config.RootCACerts = rootCerts
-
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-
-	httpsServer := startTargetHTTPSServerWithCert(t, "certs/localhost_cert.pem", "certs/localhost_key.pem")
-	defer httpsServer.Shutdown(context.TODO())
-
-	waitForStartup(t, proxyHttpAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+func TestProxyTrustsTargetSignedWithCustomRootCA(t *testing.T) {
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+			// This is false by default, but make it explicit for clarity
+			config.InsecureSkipCertVerification = false
+			config.RootCACerts = c.rootCAs
+		},
+		serversSetup: func(c *certificateFixtures) []*http.Server {
+			server := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
+			return []*http.Server{server}
 		},
 	}
 
-	client := &http.Client{Transport: tr}
+	client := fixture.setUp(t)
 
 	t.Run("Successful proxy to HTTPS target with custom root CA", func(t *testing.T) {
 		req, err := http.NewRequest("GET", "http://localhost:12081/target", nil)
@@ -462,46 +448,34 @@ func TestCustomRootCA(t *testing.T) {
 		}
 	})
 
+	fixture.tearDown(t)
+
 }
 
-func getRootCAs(t *testing.T) *x509.CertPool {
-	pemBytes, err := ioutil.ReadFile("certs/cert.pem")
-	if err != nil {
-		t.Fatalf("Failed to read root CA certificate: %s", err)
-	}
-	rootCerts := x509.NewCertPool()
-	if !rootCerts.AppendCertsFromPEM(pemBytes) {
-		t.Fatal("Failed to append certs from downloaded PEM")
-	}
-	return rootCerts
-}
-
-func TestHTTPSListener(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
-	config.InsecureSkipCertVerification = true
-	proxy := startTLSProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-
-	targetServer := startTargetServer(t)
-	defer targetServer.Shutdown(context.TODO())
-
-	targetHTTPSServer := startTargetHTTPSServer(t)
-	defer targetHTTPSServer.Shutdown(context.TODO())
-
-	waitForStartup(t, proxyHttpsAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			// Notice https in the proxy address
-			return url.Parse("https://127.0.0.1:11091")
+func TestHTTPSProxyListener(t *testing.T) {
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+			config.InsecureSkipCertVerification = false
+			config.RootCACerts = c.rootCAs
 		},
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		serversSetup: func(c *certificateFixtures) []*http.Server {
+			httpServer := startTargetServer(t)
+			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
+			return []*http.Server{httpServer, httpsServer}
+		},
+		proxyType: HTTPS,
+		transportSetup: func(tr *http.Transport, c *certificateFixtures) {
+			tr.TLSClientConfig = &tls.Config{
+				RootCAs: c.rootCAs,
+			}
+		},
 	}
-	client := &http.Client{Transport: tr}
+
+	client := fixture.setUp(t)
 
 	t.Run("Test HTTPS proxy -> HTTP target", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "http://localhost:12080/target", nil)
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s/target", httpTargetServerPort), nil)
 		if err != nil {
 			t.Fatalf("Failed to create new request: %s\n", err)
 		}
@@ -515,7 +489,7 @@ func TestHTTPSListener(t *testing.T) {
 	})
 
 	t.Run("Test HTTPS proxy -> HTTPS target", func(t *testing.T) {
-		req, err := http.NewRequest("GET", "http://localhost:12081/target", nil)
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s/target", httpsTargetServerPort), nil)
 		if err != nil {
 			t.Fatalf("Failed to create new request: %s\n", err)
 		}
@@ -536,27 +510,24 @@ func TestHTTPSListener(t *testing.T) {
 			t.Errorf("Expected string 'Hello from target HTTPS' in response, but was %s\n", buf.String())
 		}
 	})
+
+	fixture.tearDown(t)
 }
 
 func TestContentLengthLimit(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
 	maxContentLength := 8
-	config.MaxResponseBodySize = uint32(maxContentLength)
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-
-	targetServer := startLargeContentLengthServer(t)
-	defer targetServer.Shutdown(context.TODO())
-
-	waitForStartup(t, proxyHttpAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+			config.MaxResponseBodySize = uint32(maxContentLength)
+		},
+		serversSetup: func(c *certificateFixtures) []*http.Server {
+			server := startLargeContentLengthServer(t)
+			return []*http.Server{server}
 		},
 	}
-	client := &http.Client{Transport: tr}
+
+	client := fixture.setUp(t)
 
 	t.Run("Max content length", func(t *testing.T) {
 		resp, err := client.Get("http://localhost:12099/8")
@@ -580,28 +551,24 @@ func TestContentLengthLimit(t *testing.T) {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
 		}
 	})
+
+	fixture.tearDown(t)
 }
 
 func TestChunkedResponseContentLengthLimit(t *testing.T) {
-	config := NewDefaultConfig()
-	config.InsecureSkipCidrDenyList = true
 	maxContentLength := 8 * 1024
-	config.MaxResponseBodySize = uint32(maxContentLength)
-	proxy := startProxy(t, config)
-	defer proxy.Shutdown(context.TODO())
-
-	targetServer := startLargeContentLengthServer(t)
-	defer targetServer.Shutdown(context.TODO())
-
-	waitForStartup(t, proxyHttpAddress)
-
-	tr := &http.Transport{
-		Proxy: func(r *http.Request) (*url.URL, error) {
-			return url.Parse("http://127.0.0.1:11090")
+	fixture := &testFixture{
+		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+			config.MaxResponseBodySize = uint32(maxContentLength)
+		},
+		serversSetup: func(c *certificateFixtures) []*http.Server {
+			server := startLargeContentLengthServer(t)
+			return []*http.Server{server}
 		},
 	}
-	client := &http.Client{Transport: tr}
-	//client := &http.Client{}
+
+	client := fixture.setUp(t)
 
 	t.Run("Max content length", func(t *testing.T) {
 		resp, err := client.Get("http://localhost:12099/8k")
@@ -636,6 +603,7 @@ func TestChunkedResponseContentLengthLimit(t *testing.T) {
 			t.Fatalf("Expected response length %d, got %d", maxContentLength, len(responseData))
 		}
 	})
+	fixture.tearDown(t)
 }
 
 func waitForStartup(t *testing.T, address string) {
