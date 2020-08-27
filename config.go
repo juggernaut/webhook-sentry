@@ -5,9 +5,12 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +28,7 @@ readTimeout: 10s
 insecureSkipCertVerification: false
 insecureSkipCidrDenyList: false
 maxResponseBodySize: 1048576
+mozillaCaCerts: mozilla-cacerts/cacerts.pem
 `
 
 type Cidr net.IPNet
@@ -45,6 +49,7 @@ type ProxyConfig struct {
 	MitmIssuerCertFile           string                     `yaml:"mitmIssuerCertFile"`
 	MitmIssuerKeyFile            string                     `yaml:"mitmIssuerKeyFile"`
 	MitmIssuerCert               *tls.Certificate           `yaml:"-"`
+	MozillaCaCerts               string                     `yaml:"mozillaCaCerts"`
 }
 
 type Protocol string
@@ -152,13 +157,46 @@ func loadCert(certFile string, keyFile string, certName string) (*tls.Certificat
 	}
 }
 
-func getRootCABundle() (*x509.CertPool, error) {
-	resp, err := http.Get("https://curl.haxx.se/ca/cacert.pem")
+func getRootCABundle(mozillaCaCerts string) (*x509.CertPool, error) {
+	var lastModified string
+	info, err := os.Stat(mozillaCaCerts)
+	if os.IsNotExist(err) {
+		dir := filepath.Dir(mozillaCaCerts)
+		if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+			return nil, err
+		}
+	} else {
+		lastModified = info.ModTime().UTC().Format("Thu, 27 Aug 2020 07:08:59 GMT")
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://curl.haxx.se/ca/cacert.pem", nil)
+	if err != nil {
+		return nil, err
+	}
+	if lastModified != "" {
+		req.Header.Add("If-Modified-Since", lastModified)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	pemBytes, err := ioutil.ReadAll(resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		f, err := os.Create(mozillaCaCerts)
+		defer f.Close()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := io.Copy(f, resp.Body); err != nil {
+			return nil, err
+		}
+		f.Close()
+	case http.StatusNotModified:
+	default:
+		return nil, fmt.Errorf("Request to download Mozilla CA bundle failed with status code %d", resp.StatusCode)
+	}
+
+	pemBytes, err := ioutil.ReadFile(mozillaCaCerts)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +229,7 @@ func UnmarshalConfig(configData []byte) (*ProxyConfig, error) {
 	if err := config.loadMitmIssuerCert(); err != nil {
 		return nil, err
 	}
-	rootCerts, err := getRootCABundle()
+	rootCerts, err := getRootCABundle(config.MozillaCaCerts)
 	if err != nil {
 		return nil, fmt.Errorf("Error downloading root CA bundle: %s", err)
 	}
