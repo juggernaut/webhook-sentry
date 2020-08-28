@@ -22,14 +22,17 @@ var skipHeaders = []string{"Connection", "Proxy-Connection", "User-Agent"}
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	var config *ProxyConfig
+	var err error
 	if len(os.Args) > 1 {
-		var err error
 		config, err = UnmarshalConfigFromFile(os.Args[1])
 		if err != nil {
 			log.Fatalf("Failed to unmarshal config from file %s: %s\n", os.Args[1], err)
 		}
 	} else {
-		config = NewDefaultConfig()
+		config, err = InitDefaultConfig()
+		if err != nil {
+			log.Fatalf("Failed to initialize proxy configuration: %s\n", err)
+		}
 	}
 	setupLogging()
 	proxyServers := CreateProxyServers(config)

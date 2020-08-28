@@ -166,7 +166,7 @@ func getRootCABundle(mozillaCaCerts string) (*x509.CertPool, error) {
 			return nil, err
 		}
 	} else {
-		lastModified = info.ModTime().UTC().Format("Thu, 27 Aug 2020 07:08:59 GMT")
+		lastModified = info.ModTime().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
 	}
 	req, err := http.NewRequest(http.MethodGet, "https://curl.haxx.se/ca/cacert.pem", nil)
 	if err != nil {
@@ -223,17 +223,32 @@ func UnmarshalConfig(configData []byte) (*ProxyConfig, error) {
 	if err := config.validate(); err != nil {
 		return nil, fmt.Errorf("Invalid configuration: %s", err)
 	}
-	if err := config.loadClientCert(); err != nil {
+	if err := initConfig(config); err != nil {
 		return nil, err
 	}
+	return config, nil
+}
+
+func initConfig(config *ProxyConfig) error {
+	if err := config.loadClientCert(); err != nil {
+		return err
+	}
 	if err := config.loadMitmIssuerCert(); err != nil {
-		return nil, err
+		return err
 	}
 	rootCerts, err := getRootCABundle(config.MozillaCaCerts)
 	if err != nil {
-		return nil, fmt.Errorf("Error downloading root CA bundle: %s", err)
+		return fmt.Errorf("Error downloading root CA bundle: %s", err)
 	}
 	config.RootCACerts = rootCerts
+	return nil
+}
+
+func InitDefaultConfig() (*ProxyConfig, error) {
+	config := NewDefaultConfig()
+	if err := initConfig(config); err != nil {
+		return nil, err
+	}
 	return config, nil
 }
 
