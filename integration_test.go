@@ -137,7 +137,17 @@ func (f *testFixture) tearDown(t *testing.T) {
 	}
 }
 
-func TestLocalNetworkForbidden(t *testing.T) {
+func assertForbidden(client *http.Client, host string, t *testing.T) {
+	resp, err := client.Get(fmt.Sprintf("http://%s:%s", host, httpTargetServerPort))
+	if err != nil {
+		t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+	}
+	if resp.StatusCode != 403 {
+		t.Errorf("Expected status code 403, got %d\n", resp.StatusCode)
+	}
+}
+
+func TestPrivateNetworkForbidden(t *testing.T) {
 	fixture := &testFixture{
 		serversSetup: func(c *certificateFixtures) []*http.Server {
 			server := startTargetServer(t)
@@ -148,13 +158,12 @@ func TestLocalNetworkForbidden(t *testing.T) {
 	client := fixture.setUp(t)
 
 	t.Run("Localhost forbidden", func(t *testing.T) {
-		resp, err := client.Get("http://localhost:" + httpTargetServerPort)
-		if err != nil {
-			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
-		}
-		if resp.StatusCode != 403 {
-			t.Errorf("Expected status code 403, got %d\n", resp.StatusCode)
-		}
+		assertForbidden(client, "localhost", t)
+	})
+
+	t.Run("RFC 1918 addresses forbidden", func(t *testing.T) {
+		assertForbidden(client, "10.1.1.1", t)
+		assertForbidden(client, "172.16.1.1", t)
 	})
 
 	fixture.tearDown(t)
