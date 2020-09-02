@@ -19,6 +19,18 @@ import (
 
 var skipHeaders = []string{"Connection", "Proxy-Connection", "User-Agent"}
 
+const (
+	ErrorCodeHeader    string = "X-WhSentry-ErrorCode"
+	ErrorMessageHeader string = "X-WhSentry-ErrorMessage"
+
+	BlockedIPAddress  string = "1000"
+	UnableToResolveIP string = "1001"
+	InvalidRequestURI string = "1002"
+	InvalidUrlScheme  string = "1003"
+	RequestTimedOut   string = "1004"
+	TLSHandshakeError string = "1005"
+)
+
 func main() {
 	fmt.Printf("Hello egress proxy\n")
 	var config *ProxyConfig
@@ -253,10 +265,10 @@ const clientCertKey key = 0
 
 func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.Response, error) {
 	if !r.URL.IsAbs() {
-		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Request URI must be absolute"}
+		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Request URI must be absolute", errorCode: InvalidRequestURI}
 	}
 	if r.URL.Scheme != "http" {
-		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "Scheme must be HTTP"}
+		return nil, &proxyError{statusCode: http.StatusBadRequest, message: "URL scheme must be HTTP", errorCode: InvalidUrlScheme}
 	}
 	//fmt.Fprintf(w, "Hello Go HTTP")
 	var outboundUri = r.RequestURI
@@ -279,12 +291,17 @@ func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.R
 func handleError(w http.ResponseWriter, err error) int {
 	switch v := err.(type) {
 	case *proxyError:
+		w.Header().Add(ErrorCodeHeader, v.errorCode)
+		w.Header().Add(ErrorMessageHeader, v.message)
 		// TODO: handle failure of http.Error
 		http.Error(w, v.message, int(v.statusCode))
 		return int(v.statusCode)
 	case net.Error:
 		if v.Timeout() {
-			http.Error(w, "Request to target timed out", http.StatusBadGateway)
+			const timedOut string = "Request to target timed out"
+			w.Header().Add(ErrorCodeHeader, RequestTimedOut)
+			w.Header().Add(ErrorMessageHeader, timedOut)
+			http.Error(w, timedOut, http.StatusBadGateway)
 			return http.StatusBadGateway
 		}
 		if opErr, ok := v.(*net.OpError); ok {
@@ -307,8 +324,11 @@ func handleNetOpError(w http.ResponseWriter, err net.OpError) int {
 	wrapped := err.Unwrap()
 	// This is hacky, but the TLS alert errors aren't exported
 	if strings.HasPrefix(wrapped.Error(), "tls:") {
-		log.Infof("TLS handshake error: %s\n", wrapped)
-		http.Error(w, "TLS handshake error", http.StatusBadGateway)
+		message := fmt.Sprintf("TLS handshake error: %s", wrapped)
+		log.Infof(message)
+		w.Header().Add(ErrorMessageHeader, message)
+		w.Header().Add(ErrorCodeHeader, TLSHandshakeError)
+		http.Error(w, message, http.StatusBadGateway)
 		return http.StatusBadGateway
 	}
 	log.Warnf("Unexpected error while proxying request: %s\n", wrapped)
@@ -409,11 +429,10 @@ func (s *safeDialer) resolveIPPort(ctx context.Context, addr string) (string, er
 		}
 	}
 	if chosenIP == nil {
-		//return nil, fmt.Errorf("Target %s did not resolve to a valid IPv4 address", addr)
-		return "", &proxyError{statusCode: http.StatusBadRequest, message: fmt.Sprintf("Target %s did not resolve to a valid IPv4 address", addr)}
+		return "", &proxyError{statusCode: http.StatusBadRequest, message: fmt.Sprintf("Target %s did not resolve to a valid IPv4 address", addr), errorCode: UnableToResolveIP}
 	}
 	if isBlacklisted(s.cidrBlacklist, chosenIP) {
-		return "", &proxyError{statusCode: http.StatusForbidden, message: fmt.Sprintf("Blacklisted IP %s", chosenIP.String())}
+		return "", &proxyError{statusCode: http.StatusForbidden, message: fmt.Sprintf("IP %s is blocked", chosenIP.String()), errorCode: BlockedIPAddress}
 	}
 
 	return net.JoinHostPort(chosenIP.String(), port), nil
@@ -487,6 +506,7 @@ func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
 type proxyError struct {
 	statusCode uint
 	message    string
+	errorCode  string
 }
 
 func (p *proxyError) Error() string {

@@ -137,13 +137,20 @@ func (f *testFixture) tearDown(t *testing.T) {
 	}
 }
 
-func assertForbidden(client *http.Client, host string, t *testing.T) {
+func assertForbiddenIP(client *http.Client, host string, t *testing.T) {
 	resp, err := client.Get(fmt.Sprintf("http://%s:%s", host, httpTargetServerPort))
 	if err != nil {
 		t.Errorf("Error in GET request to target server via proxy: %s\n", err)
 	}
 	if resp.StatusCode != 403 {
 		t.Errorf("Expected status code 403, got %d\n", resp.StatusCode)
+	}
+	errorCode, ok := resp.Header[http.CanonicalHeaderKey(ErrorCodeHeader)]
+	if !ok {
+		t.Errorf("Error code header not present")
+	}
+	if errorCode[0] != BlockedIPAddress {
+		t.Errorf("Expected errorCode %s, but found %s", BlockedIPAddress, errorCode[0])
 	}
 }
 
@@ -158,12 +165,12 @@ func TestPrivateNetworkForbidden(t *testing.T) {
 	client := fixture.setUp(t)
 
 	t.Run("Localhost forbidden", func(t *testing.T) {
-		assertForbidden(client, "localhost", t)
+		assertForbiddenIP(client, "localhost", t)
 	})
 
 	t.Run("RFC 1918 addresses forbidden", func(t *testing.T) {
-		assertForbidden(client, "10.1.1.1", t)
-		assertForbidden(client, "172.16.1.1", t)
+		assertForbiddenIP(client, "10.1.1.1", t)
+		assertForbiddenIP(client, "172.16.1.1", t)
 	})
 
 	fixture.tearDown(t)
@@ -390,6 +397,13 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 		}
 		if resp.StatusCode != 502 {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
+		}
+		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ErrorCodeHeader)]
+		if !ok {
+			t.Errorf("Error Code header not present")
+		}
+		if errorCode[0] != RequestTimedOut {
+			t.Errorf("Expected %s errorCode, got %s", RequestTimedOut, errorCode[0])
 		}
 	})
 
