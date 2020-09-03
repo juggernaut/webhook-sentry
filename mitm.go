@@ -17,8 +17,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-
-	log "github.com/sirupsen/logrus"
 )
 
 type Mitmer struct {

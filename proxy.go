@@ -14,10 +14,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	log "github.com/sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 )
 
 var skipHeaders = []string{"Connection", "Proxy-Connection", "User-Agent"}
+
+var accessLog = logrus.New()
+var log = logrus.New()
 
 const (
 	ErrorCodeHeader    string = "X-WhSentry-ErrorCode"
@@ -32,7 +35,7 @@ const (
 )
 
 func main() {
-	fmt.Printf("Hello egress proxy\n")
+	fmt.Print(banner)
 	var config *ProxyConfig
 	var err error
 	if len(os.Args) > 1 {
@@ -46,7 +49,10 @@ func main() {
 			log.Fatalf("Failed to initialize proxy configuration: %s\n", err)
 		}
 	}
-	setupLogging()
+	//setupLogging()
+	accessLog.Out = os.Stdout
+	accessLog.SetFormatter(&AccessLogTextFormatter{})
+
 	proxyServers := CreateProxyServers(config)
 	wg := &sync.WaitGroup{}
 	for i, proxyServer := range proxyServers {
@@ -61,6 +67,7 @@ func main() {
 	wg.Wait()
 }
 
+/*
 func setupLogging() {
 	if isTruish(os.Getenv("TRACE")) {
 		log.SetLevel(log.TraceLevel)
@@ -68,6 +75,7 @@ func setupLogging() {
 		log.SetLevel(log.InfoLevel)
 	}
 }
+*/
 
 func startHTTPServer(listenAddress string, server *http.Server, wg *sync.WaitGroup) {
 	listener, err := net.Listen("tcp4", listenAddress)
@@ -237,22 +245,22 @@ func (p *ProxyHTTPHandler) writeResponseBody(w http.ResponseWriter, resp *http.R
 			bytesReadSoFar += uint32(n)
 			//log.Infof("Bytes read so far = %d", bytesReadSoFar)
 			if bytesReadSoFar > p.maxContentLength {
-				log.Warn("Response body exceeded maximum allowed length")
+				//log.Warn("Response body exceeded maximum allowed length")
 				break
 			}
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
-				log.Warnf("Error writing to inbound socket: %s\n", writeErr)
+				//log.Warnf("Error writing to inbound socket: %s\n", writeErr)
 				break
 			}
 		}
 		if err == io.EOF {
 			break
 		} else if err == context.Canceled {
-			log.Info("Socket idle read time out reached")
+			//log.Info("Socket idle read time out reached")
 			break
 		} else if err != nil {
-			log.Warnf("error occured reading response: %s\n", err)
+			//log.Warnf("error occured reading response: %s\n", err)
 			break
 		}
 		timer.Reset(p.idleReadTimeout)
@@ -307,14 +315,14 @@ func handleError(w http.ResponseWriter, err error) int {
 		if opErr, ok := v.(*net.OpError); ok {
 			return handleNetOpError(w, *opErr)
 		}
-		log.Warnf("Unexpected error while proxying request: %s\n", err)
+		//log.Warnf("Unexpected error while proxying request: %s\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	case x509.CertificateInvalidError, x509.HostnameError:
 		http.Error(w, v.Error(), http.StatusBadGateway)
 		return http.StatusBadGateway
 	default:
-		log.Warnf("Unexpected error while proxying request: %s\n", err)
+		//log.Warnf("Unexpected error while proxying request: %s\n", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
 	}
@@ -325,19 +333,19 @@ func handleNetOpError(w http.ResponseWriter, err net.OpError) int {
 	// This is hacky, but the TLS alert errors aren't exported
 	if strings.HasPrefix(wrapped.Error(), "tls:") {
 		message := fmt.Sprintf("TLS handshake error: %s", wrapped)
-		log.Infof(message)
+		//log.Infof(message)
 		w.Header().Add(ErrorMessageHeader, message)
 		w.Header().Add(ErrorCodeHeader, TLSHandshakeError)
 		http.Error(w, message, http.StatusBadGateway)
 		return http.StatusBadGateway
 	}
-	log.Warnf("Unexpected error while proxying request: %s\n", wrapped)
+	//log.Warnf("Unexpected error while proxying request: %s\n", wrapped)
 	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	return http.StatusInternalServerError
 }
 
 func logRequest(r *http.Request, responseCode int, responseTime time.Duration) {
-	requestLogger := log.WithFields(log.Fields{"client_ip": r.RemoteAddr, "method": r.Method, "url": r.RequestURI, "response_code": responseCode,
+	requestLogger := accessLog.WithFields(logrus.Fields{"client_addr": r.RemoteAddr, "method": r.Method, "url": r.RequestURI, "response_code": responseCode,
 		"response_time": responseTime})
 	requestLogger.Infoln()
 }
@@ -475,7 +483,7 @@ func (s *safeDialer) doTLSHandshake(conn net.Conn, hostname string, certAlias st
 		InsecureSkipVerify: s.skipServerCertVerification,
 		GetClientCertificate: func(requestInfo *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 			if len(clientCert.Certificate) == 0 {
-				log.Warn("Client certificate requested by server, but we don't have one")
+				//log.Warn("Client certificate requested by server, but we don't have one")
 			}
 			return &clientCert, nil
 		},
@@ -518,4 +526,15 @@ func isTruish(val string) bool {
 		return false
 	}
 	return val == "1" || strings.EqualFold(val, "true")
+}
+
+type AccessLogTextFormatter struct {
+}
+
+func (f *AccessLogTextFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	fields := entry.Data
+	ts := entry.Time.Format(time.RFC3339)
+	responseTime := fields["response_time"].(time.Duration)
+	logLine := fmt.Sprintf("[%s] %s %s %s %d %dms\n", ts, fields["client_addr"], fields["method"], fields["url"], fields["response_code"], responseTime.Milliseconds())
+	return []byte(logLine), nil
 }
