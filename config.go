@@ -40,6 +40,8 @@ insecureSkipCertVerification: false
 insecureSkipCidrDenyList: false
 maxResponseBodySize: 1048576
 mozillaCaCerts: mozilla-cacerts/cacerts.pem
+accessLog:
+  format: text
 `
 
 type Cidr net.IPNet
@@ -61,6 +63,7 @@ type ProxyConfig struct {
 	MitmIssuerKeyFile            string                     `yaml:"mitmIssuerKeyFile"`
 	MitmIssuerCert               *tls.Certificate           `yaml:"-"`
 	MozillaCaCerts               string                     `yaml:"mozillaCaCerts"`
+	AccessLog                    AccessLogConfig            `yaml:"accessLog"`
 }
 
 type Protocol string
@@ -75,6 +78,18 @@ type ListenerConfig struct {
 	Type     Protocol
 	CertFile string `yaml:"certFile"`
 	KeyFile  string `yaml:"keyFile"`
+}
+
+type LogFormat string
+
+const (
+	JSON LogFormat = "json"
+	Text LogFormat = "text"
+)
+
+type AccessLogConfig struct {
+	File   string
+	Format LogFormat
 }
 
 func (cidr *Cidr) UnmarshalYAML(unmarshal func(interface{}) error) error {

@@ -35,7 +35,6 @@ const (
 )
 
 func main() {
-	fmt.Print(banner)
 	var config *ProxyConfig
 	var err error
 	if len(os.Args) > 1 {
@@ -49,9 +48,11 @@ func main() {
 			log.Fatalf("Failed to initialize proxy configuration: %s\n", err)
 		}
 	}
-	//setupLogging()
-	accessLog.Out = os.Stdout
-	accessLog.SetFormatter(&AccessLogTextFormatter{})
+	if err := setupLogging(config); err != nil {
+		log.Fatalf("Failed to initialize logging: %s\n", err)
+	}
+
+	fmt.Print(banner)
 
 	proxyServers := CreateProxyServers(config)
 	wg := &sync.WaitGroup{}
@@ -67,15 +68,23 @@ func main() {
 	wg.Wait()
 }
 
-/*
-func setupLogging() {
-	if isTruish(os.Getenv("TRACE")) {
-		log.SetLevel(log.TraceLevel)
+func setupLogging(config *ProxyConfig) error {
+	if config.AccessLog.File != "" {
+		f, err := os.Create(config.AccessLog.File)
+		if err != nil {
+			return err
+		}
+		accessLog.Out = f
 	} else {
-		log.SetLevel(log.InfoLevel)
+		accessLog.Out = os.Stdout
 	}
+	if config.AccessLog.Format == JSON {
+		accessLog.SetFormatter(&logrus.JSONFormatter{})
+	} else {
+		accessLog.SetFormatter(&AccessLogTextFormatter{})
+	}
+	return nil
 }
-*/
 
 func startHTTPServer(listenAddress string, server *http.Server, wg *sync.WaitGroup) {
 	listener, err := net.Listen("tcp4", listenAddress)
