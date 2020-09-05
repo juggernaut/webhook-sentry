@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Mitmer struct {
@@ -35,11 +37,11 @@ func NewMitmer() (*Mitmer, error) {
 	return &Mitmer{generatedCertKeyPair: keyPair}, nil
 }
 
-func (m *Mitmer) HandleHttpConnect(w http.ResponseWriter, r *http.Request) {
+func (m *Mitmer) HandleHttpConnect(requestUUID uuid.UUID, w http.ResponseWriter, r *http.Request) {
 	// TODO: think about what context deadlines to set etc
 	outboundConn, err := m.dialContext(context.Background(), "tcp4", r.RequestURI)
 	if err != nil {
-		handleError(w, err)
+		handleError(requestUUID, w, err)
 		return
 	}
 	defer outboundConn.Close()

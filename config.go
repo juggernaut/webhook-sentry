@@ -42,6 +42,8 @@ maxResponseBodySize: 1048576
 mozillaCaCerts: mozilla-cacerts/cacerts.pem
 accessLog:
   format: text
+proxyLog:
+  format: text
 `
 
 type Cidr net.IPNet
@@ -63,7 +65,8 @@ type ProxyConfig struct {
 	MitmIssuerKeyFile            string                     `yaml:"mitmIssuerKeyFile"`
 	MitmIssuerCert               *tls.Certificate           `yaml:"-"`
 	MozillaCaCerts               string                     `yaml:"mozillaCaCerts"`
-	AccessLog                    AccessLogConfig            `yaml:"accessLog"`
+	AccessLog                    LogConfig                  `yaml:"accessLog"`
+	ProxyLog                     LogConfig                  `yaml:"proxyLog"`
 }
 
 type Protocol string
@@ -87,7 +90,7 @@ const (
 	Text LogFormat = "text"
 )
 
-type AccessLogConfig struct {
+type LogConfig struct {
 	File   string
 	Format LogFormat
 }
