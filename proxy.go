@@ -27,13 +27,14 @@ const (
 	ErrorCodeHeader    string = "X-WhSentry-ErrorCode"
 	ErrorMessageHeader string = "X-WhSentry-ErrorMessage"
 
-	BlockedIPAddress   string = "1000"
-	UnableToResolveIP  string = "1001"
-	InvalidRequestURI  string = "1002"
-	InvalidUrlScheme   string = "1003"
-	RequestTimedOut    string = "1004"
-	TLSHandshakeError  string = "1005"
-	TCPConnectionError string = "1006"
+	BlockedIPAddress           string = "1000"
+	UnableToResolveIP          string = "1001"
+	InvalidRequestURI          string = "1002"
+	InvalidUrlScheme           string = "1003"
+	RequestTimedOut            string = "1004"
+	TLSHandshakeError          string = "1005"
+	TCPConnectionError         string = "1006"
+	CertificateValidationError string = "1007"
 )
 
 func main() {
@@ -326,6 +327,11 @@ func handleError(requestUUID uuid.UUID, w http.ResponseWriter, err error) int {
 		// TODO: handle failure of http.Error
 		http.Error(w, v.message, int(v.statusCode))
 		return int(v.statusCode)
+	case *net.DNSError:
+		w.Header().Add(ErrorCodeHeader, UnableToResolveIP)
+		w.Header().Add(ErrorMessageHeader, err.Error())
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return http.StatusBadGateway
 	case net.Error:
 		if v.Timeout() {
 			const timedOut string = "Request to target timed out"
@@ -340,7 +346,10 @@ func handleError(requestUUID uuid.UUID, w http.ResponseWriter, err error) int {
 		logError(requestUUID, "Unexpected error while proxying request", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return http.StatusInternalServerError
-	case x509.CertificateInvalidError, x509.HostnameError:
+	case x509.CertificateInvalidError, x509.HostnameError, x509.UnknownAuthorityError:
+		logWarn(requestUUID, "Certificate validation error", err)
+		w.Header().Add(ErrorCodeHeader, CertificateValidationError)
+		w.Header().Add(ErrorMessageHeader, v.Error())
 		http.Error(w, v.Error(), http.StatusBadGateway)
 		return http.StatusBadGateway
 	default:
