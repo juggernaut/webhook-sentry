@@ -27,12 +27,13 @@ const (
 	ErrorCodeHeader    string = "X-WhSentry-ErrorCode"
 	ErrorMessageHeader string = "X-WhSentry-ErrorMessage"
 
-	BlockedIPAddress  string = "1000"
-	UnableToResolveIP string = "1001"
-	InvalidRequestURI string = "1002"
-	InvalidUrlScheme  string = "1003"
-	RequestTimedOut   string = "1004"
-	TLSHandshakeError string = "1005"
+	BlockedIPAddress   string = "1000"
+	UnableToResolveIP  string = "1001"
+	InvalidRequestURI  string = "1002"
+	InvalidUrlScheme   string = "1003"
+	RequestTimedOut    string = "1004"
+	TLSHandshakeError  string = "1005"
+	TCPConnectionError string = "1006"
 )
 
 func main() {
@@ -360,6 +361,14 @@ func handleNetOpError(requestUUID uuid.UUID, w http.ResponseWriter, err net.OpEr
 		http.Error(w, message, http.StatusBadGateway)
 		return http.StatusBadGateway
 	}
+	if strings.Contains(wrapped.Error(), "connect:") {
+		logWarn(requestUUID, "TCP connection error", wrapped)
+		message := fmt.Sprintf("TCP connection error: %s", wrapped)
+		w.Header().Add(ErrorMessageHeader, message)
+		w.Header().Add(ErrorCodeHeader, TCPConnectionError)
+		http.Error(w, message, http.StatusBadGateway)
+		return http.StatusBadGateway
+	}
 	logError(requestUUID, "Unexpected error while proxying request", wrapped)
 	http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	return http.StatusInternalServerError
@@ -583,6 +592,11 @@ type ProxyLogTextFormatter struct {
 func (f *ProxyLogTextFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	fields := entry.Data
 	ts := entry.Time.Format(time.RFC3339)
-	logLine := fmt.Sprintf("[%s] %s %s %s\n", ts, fields["uuid"], strings.ToUpper(entry.Level.String()), entry.Message)
+	var errorStr string
+	if err, ok := fields["error"]; ok {
+		errorStr = err.(string)
+		errorStr = ": " + errorStr
+	}
+	logLine := fmt.Sprintf("[%s] %s %s %s%s\n", ts, fields["uuid"], strings.ToUpper(entry.Level.String()), entry.Message, errorStr)
 	return []byte(logLine), nil
 }

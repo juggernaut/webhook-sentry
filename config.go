@@ -206,6 +206,10 @@ func getRootCABundle(mozillaCaCerts string) (*x509.CertPool, error) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if lastModified != "" {
+			fmt.Printf("WARN: Request to check for latest CA Root bundle failed with error '%s'; continuing with existing CA root bundle on disk\n", err)
+			return loadRootCABundleFromFile(mozillaCaCerts)
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -222,10 +226,18 @@ func getRootCABundle(mozillaCaCerts string) (*x509.CertPool, error) {
 		f.Close()
 	case http.StatusNotModified:
 	default:
+		if lastModified != "" {
+			fmt.Printf("WARN: Request to check for latest CA Root bundle failed with status code %d; continuing with existing CA root bundle on disk\n", resp.StatusCode)
+			return loadRootCABundleFromFile(mozillaCaCerts)
+		}
 		return nil, fmt.Errorf("Request to download Mozilla CA bundle failed with status code %d", resp.StatusCode)
 	}
 
-	pemBytes, err := ioutil.ReadFile(mozillaCaCerts)
+	return loadRootCABundleFromFile(mozillaCaCerts)
+}
+
+func loadRootCABundleFromFile(cacerts string) (*x509.CertPool, error) {
+	pemBytes, err := ioutil.ReadFile(cacerts)
 	if err != nil {
 		return nil, err
 	}
