@@ -384,7 +384,11 @@ func handleNetOpError(requestUUID uuid.UUID, w http.ResponseWriter, err net.OpEr
 }
 
 func logRequest(r *http.Request, requestUUID uuid.UUID, responseCode int, responseTime time.Duration) {
-	requestLogger := accessLog.WithFields(logrus.Fields{"uuid": requestUUID.String(), "client_addr": r.RemoteAddr, "method": r.Method, "url": r.RequestURI, "response_code": responseCode,
+	url := r.RequestURI
+	if isTLS(r.Header) {
+		url = strings.Replace(url, "http:", "https:", 1)
+	}
+	requestLogger := accessLog.WithFields(logrus.Fields{"uuid": requestUUID.String(), "client_addr": r.RemoteAddr, "method": r.Method, "url": url, "response_code": responseCode,
 		"response_time": responseTime})
 	requestLogger.Info()
 }
