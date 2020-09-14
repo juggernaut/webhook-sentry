@@ -433,11 +433,7 @@ func doLog(requestUUID uuid.UUID, message string, err error, level logrus.Level)
 }
 
 func updateMetrics(duration time.Duration, errorCode string) {
-	labels := prometheus.Labels{}
-	if errorCode != "" {
-		labels["error_code"] = errorCode
-	}
-	responseHistogram.With(labels).Observe(float64(duration.Milliseconds()))
+	responseHistogram.With(prometheus.Labels{"error_code": errorCode}).Observe(float64(duration.Milliseconds()))
 }
 
 func isTLS(h http.Header) bool {

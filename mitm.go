@@ -41,7 +41,8 @@ func (m *Mitmer) HandleHttpConnect(requestUUID uuid.UUID, w http.ResponseWriter,
 	// TODO: think about what context deadlines to set etc
 	outboundConn, err := m.dialContext(context.Background(), "tcp4", r.RequestURI)
 	if err != nil {
-		handleError(requestUUID, w, err)
+		responseCode, errorCode, errorMsg := mapError(requestUUID, err)
+		sendHTTPError(w, responseCode, errorCode, errorMsg)
 		return
 	}
 	defer outboundConn.Close()
