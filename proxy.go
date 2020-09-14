@@ -392,7 +392,7 @@ func mapError(requestUUID uuid.UUID, err error) (int, string, string) {
 func mapNetOpError(requestUUID uuid.UUID, err net.OpError) (int, string, string) {
 	wrapped := err.Unwrap()
 	// This is hacky, but the TLS alert errors aren't exported
-	if strings.HasPrefix(wrapped.Error(), "tls:") {
+	if strings.Contains(wrapped.Error(), "tls:") {
 		logWarn(requestUUID, "TLS handshake error", wrapped)
 		message := fmt.Sprintf("TLS handshake error: %s", wrapped)
 		return http.StatusBadGateway, TLSHandshakeError, message
