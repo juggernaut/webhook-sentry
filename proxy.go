@@ -259,6 +259,8 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		duration := time.Now().Sub(start)
 		if errorCode == InternalServerError {
+			// XXX: temp to find github actions error
+			fmt.Printf("Type of error is %T\n", errorCode)
 			logError(requestUUID, "Unexpected error while proxying request", err)
 		}
 		logRequest(r, requestUUID, responseCode, duration)
