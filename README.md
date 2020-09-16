@@ -1,4 +1,4 @@
-# Webhook Sentry
+# Webhook Sentry [![Actions Status](https://github.com/juggernaut/egress-proxy/workflows/Go/badge.svg)](https://github.com/juggernaut/egress-proxy/actions)
 Webhook Sentry is a proxy that helps you send [webhooks](https://en.wikipedia.org/wiki/Webhook) to your customers securely.
 
 ## Why?
