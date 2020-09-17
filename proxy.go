@@ -53,6 +53,7 @@ const (
 	CertificateValidationError string = "1007"
 	ResponseTooLarge           string = "1008"
 	InternalServerError        string = "1009"
+	ClientCertNotFoundError    string = "1010"
 )
 
 func main() {
@@ -543,27 +544,29 @@ func (s *safeDialer) DialTLSContext(ctx context.Context, network, addr string) (
 	if err != nil {
 		return nil, err
 	}
-	conn, err := s.dialer.DialContext(ctx, "tcp4", ipPort)
-	if err != nil {
-		return nil, err
-	}
 	certAlias, ok := ctx.Value(clientCertKey).(string)
 	if ok {
 		if _, found := s.clientCerts[certAlias]; !found {
-			return nil, &proxyError{statusCode: http.StatusInternalServerError, message: fmt.Sprintf("Programming error; no cert with alias %s, this check should have been made upstack", certAlias)}
+			return nil, &proxyError{statusCode: http.StatusBadRequest, message: fmt.Sprintf("Cert with alias %s not found in certificate store", certAlias), errorCode: ClientCertNotFoundError}
 		}
+	}
+	conn, err := s.dialer.DialContext(ctx, "tcp4", ipPort)
+	if err != nil {
+		return nil, err
 	}
 	return s.doTLSHandshake(conn, host, certAlias)
 }
 
 func (s *safeDialer) doTLSHandshake(conn net.Conn, hostname string, certAlias string) (net.Conn, error) {
 	var clientCert tls.Certificate
-	if certAlias != "" {
-		cert, ok := s.clientCerts[certAlias]
-		if ok {
-			clientCert = cert
-		}
+	if certAlias == "" {
+		certAlias = "default"
 	}
+
+	if cert, ok := s.clientCerts[certAlias]; ok {
+		clientCert = cert
+	}
+
 	tlsConfig := &tls.Config{
 		ServerName:         hostname,
 		InsecureSkipVerify: s.skipServerCertVerification,

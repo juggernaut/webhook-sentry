@@ -274,7 +274,53 @@ func TestHTTPSTargets(t *testing.T) {
 		}
 	})
 
-	t.Run("Successful proxy to HTTPS target that checks client cert", func(t *testing.T) {
+	t.Run("Unknown client cert", func(t *testing.T) {
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s/target", httpsTargetServerWithClientCertCheckPort), nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		req.Header.Add("X-WHSentry-TLS", "true")
+		req.Header.Add("X-WHSentry-ClientCert", "foobar")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 400 {
+			t.Errorf("Expected status code 400, got %d\n", resp.StatusCode)
+		}
+		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ErrorCodeHeader)]
+		if !ok {
+			t.Errorf("Error Code header not present")
+		}
+		if errorCode[0] != ClientCertNotFoundError {
+			t.Errorf("Expected %s errorCode, got %s", ClientCertNotFoundError, errorCode[0])
+		}
+	})
+
+	t.Run("Successful proxy to HTTPS target that checks client cert using implicit default client cert", func(t *testing.T) {
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s/target", httpsTargetServerWithClientCertCheckPort), nil)
+		if err != nil {
+			t.Fatalf("Failed to create new request: %s\n", err)
+		}
+		req.Header.Add("X-WHSentry-TLS", "true")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		buf := new(strings.Builder)
+		_, err = io.Copy(buf, resp.Body)
+		if err != nil {
+			t.Errorf("Error while reading body: %s\n", err)
+		}
+		if buf.String() != "Hello from target HTTPS with client cert check" {
+			t.Errorf("Expected string 'Hello from target HTTPS with client cert check' in response, but was %s\n", buf.String())
+		}
+	})
+
+	t.Run("Successful proxy to HTTPS target that checks client cert with explicit cert specified", func(t *testing.T) {
 		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s/target", httpsTargetServerWithClientCertCheckPort), nil)
 		if err != nil {
 			t.Fatalf("Failed to create new request: %s\n", err)
