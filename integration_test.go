@@ -344,22 +344,6 @@ func TestHTTPSTargets(t *testing.T) {
 		}
 	})
 
-	t.Run("Failed proxy to HTTPS target that requires a client cert but we don't specify one", func(t *testing.T) {
-		req, err := http.NewRequest("GET", fmt.Sprintf("http://localhost:%s/target", httpsTargetServerWithClientCertCheckPort), nil)
-		if err != nil {
-			t.Fatalf("Failed to create new request: %s\n", err)
-		}
-		req.Header.Add("X-WHSentry-TLS", "true")
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
-		}
-		// TODO: When we get a proper header in the response back, assert on the TLS handshake error
-		if resp.StatusCode != 502 {
-			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
-		}
-	})
-
 	fixture.tearDown(t)
 
 }
