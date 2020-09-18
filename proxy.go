@@ -40,8 +40,8 @@ var (
 )
 
 const (
-	ErrorCodeHeader    string = "X-WhSentry-ErrorCode"
-	ErrorMessageHeader string = "X-WhSentry-ErrorMessage"
+	ReasonCodeHeader string = "X-WhSentry-ReasonCode"
+	ReasonHeader     string = "X-WhSentry-Reason"
 
 	BlockedIPAddress           string = "1000"
 	UnableToResolveIP          string = "1001"
@@ -124,7 +124,7 @@ func configureLog(logger *logrus.Logger, logConfig LogConfig, formatter logrus.F
 func setupMetrics() {
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		if err := http.ListenAndServe(":2112", nil); err != http.ErrServerClosed {
+		if err := http.ListenAndServe("127.0.0.1:2112", nil); err != http.ErrServerClosed {
 			log.Warnf("Failed to start Prometheus metrics server: %s\n", err)
 		}
 	}()
@@ -364,8 +364,8 @@ func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.R
 }
 
 func sendHTTPError(w http.ResponseWriter, statusCode int, errorCode string, errorMessage string) {
-	w.Header().Add(ErrorCodeHeader, errorCode)
-	w.Header().Add(ErrorMessageHeader, errorMessage)
+	w.Header().Add(ReasonCodeHeader, errorCode)
+	w.Header().Add(ReasonHeader, errorMessage)
 	http.Error(w, errorMessage, statusCode)
 }
 

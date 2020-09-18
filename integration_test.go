@@ -145,7 +145,7 @@ func assertForbiddenIP(client *http.Client, host string, t *testing.T) {
 	if resp.StatusCode != 403 {
 		t.Errorf("Expected status code 403, got %d\n", resp.StatusCode)
 	}
-	errorCode, ok := resp.Header[http.CanonicalHeaderKey(ErrorCodeHeader)]
+	errorCode, ok := resp.Header[http.CanonicalHeaderKey(ReasonCodeHeader)]
 	if !ok {
 		t.Errorf("Error code header not present")
 	}
@@ -288,7 +288,7 @@ func TestHTTPSTargets(t *testing.T) {
 		if resp.StatusCode != 400 {
 			t.Errorf("Expected status code 400, got %d\n", resp.StatusCode)
 		}
-		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ErrorCodeHeader)]
+		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ReasonCodeHeader)]
 		if !ok {
 			t.Errorf("Error Code header not present")
 		}
@@ -428,7 +428,7 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 		if resp.StatusCode != 502 {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
 		}
-		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ErrorCodeHeader)]
+		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ReasonCodeHeader)]
 		if !ok {
 			t.Errorf("Error Code header not present")
 		}
