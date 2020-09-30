@@ -1,4 +1,4 @@
-module github.com/juggernaut/egress-proxy
+module github.com/juggernaut/webhook-sentry
 
 go 1.14
 
