@@ -28,7 +28,7 @@ Simply run the downloaded binary:
 ./whsentry
 ```
 
-Webhook Sentry runs on port 9090 by default. You can conifgure the address and port in the `listeners` (TODO: ink) section of the config.
+Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` (TODO: ink) section of the config.
 
 ## Usage
 ### HTTP target
