@@ -1,4 +1,4 @@
-# Webhook Sentry [![Actions Status](https://github.com/juggernaut/egress-proxy/workflows/Go/badge.svg)](https://github.com/juggernaut/egress-proxy/actions)
+# Webhook Sentry [![Actions Status](https://github.com/juggernaut/egress-proxy/workflows/Go/badge.svg)](https://github.com/juggernaut/egress-proxy/actions) [![release](https://img.shields.io/github/v/release/juggernaut/webhook-sentry?sort=semver)]
 Webhook Sentry is a proxy that helps you send [webhooks](https://en.wikipedia.org/wiki/Webhook) to your customers securely.
 
 ## Why?
@@ -23,9 +23,10 @@ may not want to allocate static IPs to your application instances. In other situ
 egress proxy layer, you only need to assign static IPs to your proxy instances.
 
 ## Getting Started
-Simply run the downloaded binary:
+1. Download the latest release for your platform
+2. Run the downloaded binary:
 ```
-./whsentry
+whsentry
 ```
 
 Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` (TODO: ink) section of the config.
