@@ -1,6 +1,6 @@
 /**
 * Copyright (c) 2020 Ameya Lokare
-*/
+ */
 package main
 
 import (
@@ -47,6 +47,7 @@ accessLog:
   format: text
 proxyLog:
   format: text
+metricsAddress: 127.0.0.1:2112
 `
 
 type Cidr net.IPNet
@@ -70,6 +71,7 @@ type ProxyConfig struct {
 	MozillaCaCerts               string                     `yaml:"mozillaCaCerts"`
 	AccessLog                    LogConfig                  `yaml:"accessLog"`
 	ProxyLog                     LogConfig                  `yaml:"proxyLog"`
+	MetricsAddress               string                     `yaml:"metricsAddress"`
 }
 
 type Protocol string

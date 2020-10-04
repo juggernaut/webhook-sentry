@@ -77,7 +77,7 @@ func main() {
 		log.Fatalf("Failed to configure logging: %s\n", err)
 	}
 
-	setupMetrics()
+	setupMetrics(config.MetricsAddress)
 
 	fmt.Print(banner)
 
@@ -124,10 +124,10 @@ func configureLog(logger *logrus.Logger, logConfig LogConfig, formatter logrus.F
 	return nil
 }
 
-func setupMetrics() {
+func setupMetrics(metricsAddress string) {
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
-		if err := http.ListenAndServe("127.0.0.1:2112", nil); err != http.ErrServerClosed {
+		if err := http.ListenAndServe(metricsAddress, nil); err != http.ErrServerClosed {
 			log.Warnf("Failed to start Prometheus metrics server: %s\n", err)
 		}
 	}()
