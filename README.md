@@ -23,7 +23,7 @@ may not want to allocate static IPs to your application instances. In other situ
 egress proxy layer, you only need to assign static IPs to your proxy instances.
 
 ## Getting Started
-1. Download the latest release for your platform
+1. Download the [latest release](https://github.com/juggernaut/webhook-sentry/releases/latest) for your platform
 2. Run the downloaded binary:
 ```
 whsentry
