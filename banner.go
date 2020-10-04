@@ -1,3 +1,6 @@
+/**
+* Copyright (c) 2020 Ameya Lokare
+*/
 package main
 
 var banner = `
