@@ -116,7 +116,7 @@ func configureLog(logger *logrus.Logger, logConfig LogConfig, formatter logrus.F
 		logger.Out = os.Stdout
 	}
 
-	if logConfig.Format == JSON {
+	if logConfig.Type == JSON {
 		logger.SetFormatter(&logrus.JSONFormatter{})
 	} else {
 		logger.SetFormatter(formatter)

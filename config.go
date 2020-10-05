@@ -44,9 +44,9 @@ insecureSkipCidrDenyList: false
 maxResponseBodySize: 1048576
 mozillaCaCerts: mozilla-cacerts/cacerts.pem
 accessLog:
-  format: text
+  type: text
 proxyLog:
-  format: text
+  type: text
 metricsAddress: 127.0.0.1:2112
 `
 
@@ -88,16 +88,16 @@ type ListenerConfig struct {
 	KeyFile  string `yaml:"keyFile"`
 }
 
-type LogFormat string
+type LogType string
 
 const (
-	JSON LogFormat = "json"
-	Text LogFormat = "text"
+	JSON LogType = "json"
+	Text LogType = "text"
 )
 
 type LogConfig struct {
-	File   string
-	Format LogFormat
+	File string
+	Type LogType
 }
 
 func (cidr *Cidr) UnmarshalYAML(unmarshal func(interface{}) error) error {
