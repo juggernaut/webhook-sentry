@@ -29,7 +29,7 @@ egress proxy layer, you only need to assign static IPs to your proxy instances.
 whsentry
 ```
 
-Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` (TODO: ink) section of the config.
+Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` section of the [config](#Configuration).
 
 ## Usage
 ### HTTP target
@@ -113,10 +113,18 @@ Server: gunicorn/19.9.0
 }
 ```
 
+### Mozilla CA certificate bundle
+Webhook Sentry uses the latest [Mozilla CA certificate bundle](https://www.mozilla.org/en-US/about/governance/policies/security-group/certs/) instead of relying on CA certificates bundled with the OS. This avoids the problem of out-of-date root CA certificates on older OS versions. See [this blog post](https://www.agwa.name/blog/post/fixing_the_addtrust_root_expiration) for why this is important. Notably, Stripe's webhooks were affected by this issue and took hours to fix.
+
+On startup, Webhook Sentry checks if there is a newer version of the Mozilla CA certificate bundle than on disk, and if so, downloads it.
+
+Additionally, by virtue of being written in Go, Webhook Sentry does not rely on OpenSSL or GnuTLS for certificate validation.
+
 ## Configuration
 You can configure webhook-sentry with a YAML file.
 
 * `listeners`: A list of HTTP/HTTPS endpoints the proxy listens on. For HTTPS endpoints, also specify `certFile` and `keyFile`.
+
 **Example**:
 ```
 listeners:
@@ -127,16 +135,39 @@ listeners:
 ```
 
 * `connectTimeout`: Timeout for the TCP connection to the destination host.
+
 **Default**: 10s
 
 * `connectionLifetime`: Maximum time a connection to the destination can be alive.
+
 **Default**: 60s
 
 * `readTimeout`: Maximum time a connection to the destination can remain idle.
+
 **Default**: 10s
 
 * `maxResponseBodySize`: Maximum size of the HTTP response body in bytes. If `Content-Length` is specified in the response and it is greater than this value, the connection is torn down and the response is discarded. The client receives a 502.
+
 **Default**: 1048576
+
+* `mozillaCaCerts`: Path to which the Mozilla CA cert bundle is downloaded.
+
+**Default**: mozilla-cacerts/cacerts.pem
+
+* `accessLog`: Specifies `type` and `file` of the proxy access log. `type` can be either `text` or `json`. By default, `text` is output to stdout.
+
+**Example**
+```
+accessLog:
+  type: json
+  file: /path/to/access.log
+```
+
+* `proxyLog`: Specifies `type` and `file` of the proxy application log. This log includes warnings and info messages related to handling proxy requests. By default, `text` is output to stdout.
+
+* `metricsAddress`: Listening address of the Prometheus metrics endpoint.
+
+**Default**: 127.0.0.1:2112
   
 
 ## Limitations
