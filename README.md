@@ -113,6 +113,13 @@ Server: gunicorn/19.9.0
 }
 ```
 
+### Mozilla CA certificate bundle
+Webhook Sentry uses the latest [Mozilla CA certificate bundle](https://www.mozilla.org/en-US/about/governance/policies/security-group/certs/) instead of relying on CA certificates bundled with the OS. This avoids the problem of out-of-date root CA certificates on older OS versions. See [this blog post](https://www.agwa.name/blog/post/fixing_the_addtrust_root_expiration) for why this is important. Notably, Stripe's webhooks were affected by this issue and took hours to fix.
+
+On startup, Webhook Sentry checks if there is a newer version of the Mozilla CA certificate bundle than on disk, and if so, downloads it.
+
+Additionally, by virtue of being written in Go, Webhook Sentry does not rely on OpenSSL or GnuTLS for certificate validation.
+
 ## Configuration
 You can configure webhook-sentry with a YAML file.
 
