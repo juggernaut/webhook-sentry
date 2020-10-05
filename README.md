@@ -142,6 +142,25 @@ listeners:
 * `maxResponseBodySize`: Maximum size of the HTTP response body in bytes. If `Content-Length` is specified in the response and it is greater than this value, the connection is torn down and the response is discarded. The client receives a 502.
 
 **Default**: 1048576
+
+* `mozillaCaCerts`: Path to which the Mozilla CA cert bundle is downloaded.
+
+**Default**: mozilla-cacerts/cacerts.pem
+
+* `accessLog`: Specifies `type` and `file` of the proxy access log. `type` can be either `text` or `json`. By default, `text` is output to stdout.
+
+**Example**
+```
+accessLog:
+  type: json
+  file: /path/to/access.log
+```
+
+* `proxyLog`: Specifies `type` and `file` of the proxy application log. This log includes warnings and info messages related to handling proxy requests. By default, `text` is output to stdout.
+
+* `metricsAddress`: Listening address of the Prometheus metrics endpoint.
+
+**Default**: 127.0.0.1:2112
   
 
 ## Limitations
