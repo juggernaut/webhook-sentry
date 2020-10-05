@@ -117,6 +117,7 @@ Server: gunicorn/19.9.0
 You can configure webhook-sentry with a YAML file.
 
 * `listeners`: A list of HTTP/HTTPS endpoints the proxy listens on. For HTTPS endpoints, also specify `certFile` and `keyFile`.
+
 **Example**:
 ```
 listeners:
@@ -127,15 +128,19 @@ listeners:
 ```
 
 * `connectTimeout`: Timeout for the TCP connection to the destination host.
+
 **Default**: 10s
 
 * `connectionLifetime`: Maximum time a connection to the destination can be alive.
+
 **Default**: 60s
 
 * `readTimeout`: Maximum time a connection to the destination can remain idle.
+
 **Default**: 10s
 
 * `maxResponseBodySize`: Maximum size of the HTTP response body in bytes. If `Content-Length` is specified in the response and it is greater than this value, the connection is torn down and the response is discarded. The client receives a 502.
+
 **Default**: 1048576
   
 
