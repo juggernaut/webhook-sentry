@@ -29,7 +29,7 @@ egress proxy layer, you only need to assign static IPs to your proxy instances.
 whsentry
 ```
 
-Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` (TODO: ink) section of the config.
+Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` section of the [config](#Configuration).
 
 ## Usage
 ### HTTP target
