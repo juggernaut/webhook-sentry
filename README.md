@@ -4,8 +4,8 @@ Webhook Sentry is a proxy that helps you send [webhooks](https://en.wikipedia.or
 ## Why?
 ### Security
 Sending webhooks appears simple on the surface -- they're just HTTP requests after all. But sending them _securely_ is hard. If your application sends webhooks, does your implementation
-1. Prevent SSRF attacks?
-2. Protect against DNS rebind attacks?
+1. Prevent [SSRF](https://portswigger.net/web-security/ssrf) attacks?
+2. Protect against [DNS rebinding](https://en.wikipedia.org/wiki/DNS_rebinding) attacks?
 3. Support mutual TLS?
 4. Validate SSL certificate chains correctly?
 5. Use an updated CA certificate bundle?
@@ -86,7 +86,7 @@ Content-Length: 24
 IP 127.0.0.1 is blocked
 ```
 
-### DNS rebind attack prevention
+### DNS rebinding attack prevention
 A malicious attacker can set up their DNS such that it first resolves to a valid public IP adddress, but subsequent resolutions point to private/internal IP addresses. This can be used to exploit webhook implementations that validate the resolved IP using `getaddrinfo()` or equivalent, then pass the original URL to a HTTP client library which resolves the host a second time. Again, let's use 1u.ms to first return a valid public IP and then the loopback IP:
 
 ```
@@ -154,6 +154,10 @@ listeners:
 
 **Default**: mozilla-cacerts/cacerts.pem
 
+* `clientCertFile`: Path to the client certificate to present to the destination (if enabling mutual TLS)
+
+* `clientKeyFile`: Path to the private key of the client certificate (if enabling mutual TLS)
+
 * `accessLog`: Specifies `type` and `file` of the proxy access log. `type` can be either `text` or `json`. By default, `text` is output to stdout.
 
 **Example**
@@ -173,6 +177,8 @@ accessLog:
 ## Limitations
 * No IPv6 support
 * No TLSv1.3 support
+* No Proxy authentication
+* Proxy does not check client certificates (not to be confused with proxy presenting client certificate to the remote host)
 
 
 
