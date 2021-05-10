@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"github.com/juggernaut/webhook-sentry/proxy"
 	"math/big"
 	"net"
 	"time"
@@ -82,7 +83,7 @@ func generateCertificate(hostname string, organizationName string, key crypto.Pr
 		issuerPrivateKey = key
 	}
 
-	return x509.CreateCertificate(rand.Reader, &template, issuerTemplate, publicKey(key), issuerPrivateKey)
+	return x509.CreateCertificate(rand.Reader, &template, issuerTemplate, proxy.PublicKey(key), issuerPrivateKey)
 }
 
 func generateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {

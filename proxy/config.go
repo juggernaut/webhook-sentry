@@ -1,7 +1,7 @@
 /**
 * Copyright (c) 2020 Ameya Lokare
  */
-package main
+package proxy
 
 import (
 	"crypto/tls"

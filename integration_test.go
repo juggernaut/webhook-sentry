@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/juggernaut/webhook-sentry/proxy"
 	"io"
 	"io/ioutil"
 	"net"
@@ -83,11 +84,11 @@ func newCertificateFixtures(t *testing.T) *certificateFixtures {
 
 type testFixture struct {
 	certificates   *certificateFixtures
-	configSetup    func(*ProxyConfig, *certificateFixtures)
+	configSetup    func(*proxy.ProxyConfig, *certificateFixtures)
 	serversSetup   func(*certificateFixtures) []*http.Server
 	transportSetup func(*http.Transport, *certificateFixtures)
 	proxy          *http.Server
-	proxyType      Protocol
+	proxyType      proxy.Protocol
 	servers        []*http.Server
 }
 
@@ -95,17 +96,17 @@ func (f *testFixture) setUp(t *testing.T) *http.Client {
 	if f.certificates == nil {
 		f.certificates = newCertificateFixtures(t)
 	}
-	proxyConfig := NewDefaultConfig()
+	proxyConfig := proxy.NewDefaultConfig()
 	if f.configSetup != nil {
 		f.configSetup(proxyConfig, f.certificates)
 	}
 	if f.proxyType == "" {
-		f.proxyType = HTTP
+		f.proxyType = proxy.HTTP
 	}
 	switch f.proxyType {
-	case HTTP:
+	case proxy.HTTP:
 		f.proxy = startProxy(t, proxyConfig)
-	case HTTPS:
+	case proxy.HTTPS:
 		f.proxy = startTLSProxyWithCert(t, proxyConfig, f.certificates.proxyCert)
 	}
 
@@ -118,7 +119,7 @@ func (f *testFixture) setUp(t *testing.T) *http.Client {
 
 	tr := &http.Transport{
 		Proxy: func(r *http.Request) (*url.URL, error) {
-			if f.proxyType == HTTP {
+			if f.proxyType == proxy.HTTP {
 				return url.Parse("http://" + proxyHttpAddress)
 			} else {
 				return url.Parse("https://" + proxyHttpsAddress)
@@ -148,12 +149,12 @@ func assertForbiddenIP(client *http.Client, host string, t *testing.T) {
 	if resp.StatusCode != 403 {
 		t.Errorf("Expected status code 403, got %d\n", resp.StatusCode)
 	}
-	errorCode, ok := resp.Header[http.CanonicalHeaderKey(ReasonCodeHeader)]
+	errorCode, ok := resp.Header[http.CanonicalHeaderKey(proxy.ReasonCodeHeader)]
 	if !ok {
 		t.Errorf("Error code header not present")
 	}
-	if errorCode[0] != BlockedIPAddress {
-		t.Errorf("Expected errorCode %s, but found %s", BlockedIPAddress, errorCode[0])
+	if errorCode[0] != proxy.BlockedIPAddress {
+		t.Errorf("Expected errorCode %s, but found %s", proxy.BlockedIPAddress, errorCode[0])
 	}
 }
 
@@ -181,7 +182,7 @@ func TestPrivateNetworkForbidden(t *testing.T) {
 
 func TestProxy(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 		},
 		serversSetup: func(certificates *certificateFixtures) []*http.Server {
@@ -238,7 +239,7 @@ func TestProxy(t *testing.T) {
 
 func TestHTTPSTargets(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, certificates *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, certificates *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.InsecureSkipCertVerification = true
 			config.ClientCerts = make(map[string]tls.Certificate)
@@ -291,12 +292,12 @@ func TestHTTPSTargets(t *testing.T) {
 		if resp.StatusCode != 400 {
 			t.Errorf("Expected status code 400, got %d\n", resp.StatusCode)
 		}
-		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ReasonCodeHeader)]
+		errorCode, ok := resp.Header[http.CanonicalHeaderKey(proxy.ReasonCodeHeader)]
 		if !ok {
 			t.Errorf("Error Code header not present")
 		}
-		if errorCode[0] != ClientCertNotFoundError {
-			t.Errorf("Expected %s errorCode, got %s", ClientCertNotFoundError, errorCode[0])
+		if errorCode[0] != proxy.ClientCertNotFoundError {
+			t.Errorf("Expected %s errorCode, got %s", proxy.ClientCertNotFoundError, errorCode[0])
 		}
 	})
 
@@ -353,7 +354,7 @@ func TestHTTPSTargets(t *testing.T) {
 
 func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.InsecureSkipCertVerification = true
 		},
@@ -375,7 +376,7 @@ func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 
 func TestMitmHttpConnect(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
 			config.InsecureSkipCertVerification = true
@@ -408,7 +409,7 @@ func TestMitmHttpConnect(t *testing.T) {
 func TestOutboundConnectionLifetime(t *testing.T) {
 
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.ConnectionLifetime = time.Second * 5
 			config.ReadTimeout = time.Second * 2
@@ -431,12 +432,12 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 		if resp.StatusCode != 502 {
 			t.Errorf("Expected status code 502, got %d\n", resp.StatusCode)
 		}
-		errorCode, ok := resp.Header[http.CanonicalHeaderKey(ReasonCodeHeader)]
+		errorCode, ok := resp.Header[http.CanonicalHeaderKey(proxy.ReasonCodeHeader)]
 		if !ok {
 			t.Errorf("Error Code header not present")
 		}
-		if errorCode[0] != RequestTimedOut {
-			t.Errorf("Expected %s errorCode, got %s", RequestTimedOut, errorCode[0])
+		if errorCode[0] != proxy.RequestTimedOut {
+			t.Errorf("Expected %s errorCode, got %s", proxy.RequestTimedOut, errorCode[0])
 		}
 	})
 
@@ -467,7 +468,7 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 
 func TestProxyTrustsTargetSignedWithCustomRootCA(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			// This is false by default, but make it explicit for clarity
 			config.InsecureSkipCertVerification = false
@@ -510,7 +511,7 @@ func TestProxyTrustsTargetSignedWithCustomRootCA(t *testing.T) {
 
 func TestHTTPSProxyListener(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.InsecureSkipCertVerification = false
 			config.RootCACerts = c.rootCAs
@@ -520,7 +521,7 @@ func TestHTTPSProxyListener(t *testing.T) {
 			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
 			return []*http.Server{httpServer, httpsServer}
 		},
-		proxyType: HTTPS,
+		proxyType: proxy.HTTPS,
 		transportSetup: func(tr *http.Transport, c *certificateFixtures) {
 			tr.TLSClientConfig = &tls.Config{
 				RootCAs: c.rootCAs,
@@ -573,7 +574,7 @@ func TestHTTPSProxyListener(t *testing.T) {
 func TestContentLengthLimit(t *testing.T) {
 	maxContentLength := 8
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.MaxResponseBodySize = uint32(maxContentLength)
 		},
@@ -614,7 +615,7 @@ func TestContentLengthLimit(t *testing.T) {
 func TestChunkedResponseContentLengthLimit(t *testing.T) {
 	maxContentLength := 8 * 1024
 	fixture := &testFixture{
-		configSetup: func(config *ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.MaxResponseBodySize = uint32(maxContentLength)
 		},
@@ -681,14 +682,14 @@ func waitForStartup(t *testing.T, address string) {
 	}
 }
 
-func startProxy(t *testing.T, p *ProxyConfig) *http.Server {
-	setupLogging(p)
-	p.Listeners = make([]ListenerConfig, 1, 1)
-	p.Listeners[0] = ListenerConfig{
+func startProxy(t *testing.T, p *proxy.ProxyConfig) *http.Server {
+	proxy.SetupLogging(p)
+	p.Listeners = make([]proxy.ListenerConfig, 1, 1)
+	p.Listeners[0] = proxy.ListenerConfig{
 		Address: proxyHttpAddress,
-		Type:    HTTP,
+		Type:    proxy.HTTP,
 	}
-	proxy := CreateProxyServers(p)[0]
+	proxy := proxy.CreateProxyServers(p)[0]
 	go func() {
 		listener, err := net.Listen("tcp4", p.Listeners[0].Address)
 		if err != nil {
@@ -699,43 +700,43 @@ func startProxy(t *testing.T, p *ProxyConfig) *http.Server {
 	return proxy
 }
 
-func startTLSProxy(t *testing.T, p *ProxyConfig) *http.Server {
-	setupLogging(p)
-	p.Listeners = make([]ListenerConfig, 1, 1)
-	p.Listeners[0] = ListenerConfig{
+func startTLSProxy(t *testing.T, p *proxy.ProxyConfig) *http.Server {
+	proxy.SetupLogging(p)
+	p.Listeners = make([]proxy.ListenerConfig, 1, 1)
+	p.Listeners[0] = proxy.ListenerConfig{
 		Address:  proxyHttpsAddress,
-		Type:     HTTP,
+		Type:     proxy.HTTP,
 		CertFile: "certs/cert.pem",
 		KeyFile:  "certs/key.pem",
 	}
-	proxy := CreateProxyServers(p)[0]
+	pServer := proxy.CreateProxyServers(p)[0]
 	go func() {
 		listener, err := net.Listen("tcp4", p.Listeners[0].Address)
 		if err != nil {
 			t.Fatalf("Could not start proxy listener: %s\n", err)
 		}
-		proxy.ServeTLS(listener, p.Listeners[0].CertFile, p.Listeners[0].KeyFile)
+		pServer.ServeTLS(listener, p.Listeners[0].CertFile, p.Listeners[0].KeyFile)
 	}()
-	return proxy
+	return pServer
 }
 
-func startTLSProxyWithCert(t *testing.T, p *ProxyConfig, proxyCert *tls.Certificate) *http.Server {
-	setupLogging(p)
-	p.Listeners = make([]ListenerConfig, 1, 1)
-	p.Listeners[0] = ListenerConfig{
+func startTLSProxyWithCert(t *testing.T, p *proxy.ProxyConfig, proxyCert *tls.Certificate) *http.Server {
+	proxy.SetupLogging(p)
+	p.Listeners = make([]proxy.ListenerConfig, 1, 1)
+	p.Listeners[0] = proxy.ListenerConfig{
 		Address: proxyHttpsAddress,
-		Type:    HTTP,
+		Type:    proxy.HTTP,
 	}
-	proxy := CreateProxyServers(p)[0]
+	pServer := proxy.CreateProxyServers(p)[0]
 	go func() {
 		config := &tls.Config{Certificates: []tls.Certificate{*proxyCert}}
 		listener, err := tls.Listen("tcp4", p.Listeners[0].Address, config)
 		if err != nil {
 			t.Fatalf("Could not start proxy listener: %s\n", err)
 		}
-		proxy.Serve(listener)
+		pServer.Serve(listener)
 	}()
-	return proxy
+	return pServer
 }
 
 func startTargetServer(t *testing.T) *http.Server {

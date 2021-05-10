@@ -1,7 +1,7 @@
 /**
 * Copyright (c) 2020 Ameya Lokare
 */
-package main
+package proxy
 
 import (
 	"context"
@@ -143,7 +143,7 @@ func (m *Mitmer) generateCert(hostname string) (*tls.Certificate, error) {
 		template.DNSNames = append(template.DNSNames, hostname)
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, m.issuerCertificate, publicKey(m.generatedCertKeyPair), m.issuerPrivateKey)
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, m.issuerCertificate, PublicKey(m.generatedCertKeyPair), m.issuerPrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +159,7 @@ func (m *Mitmer) generateCert(hostname string) (*tls.Certificate, error) {
 	return &cert, err
 }
 
-func publicKey(priv interface{}) interface{} {
+func PublicKey(priv interface{}) interface{} {
 	switch k := priv.(type) {
 	case *rsa.PrivateKey:
 		return &k.PublicKey

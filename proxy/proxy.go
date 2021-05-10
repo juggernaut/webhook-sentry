@@ -1,7 +1,7 @@
 /**
  * Copyright (c) 2020 Ameya Lokare
  */
-package main
+package proxy
 
 import (
 	"context"
@@ -59,43 +59,8 @@ const (
 	ClientCertNotFoundError    string = "1010"
 )
 
-func main() {
-	var config *ProxyConfig
-	var err error
-	if len(os.Args) > 1 {
-		config, err = UnmarshalConfigFromFile(os.Args[1])
-		if err != nil {
-			log.Fatalf("Failed to unmarshal config from file %s: %s\n", os.Args[1], err)
-		}
-	} else {
-		config, err = InitDefaultConfig()
-		if err != nil {
-			log.Fatalf("Failed to initialize proxy configuration: %s\n", err)
-		}
-	}
-	if err := setupLogging(config); err != nil {
-		log.Fatalf("Failed to configure logging: %s\n", err)
-	}
 
-	setupMetrics(config.MetricsAddress)
-
-	fmt.Print(banner)
-
-	proxyServers := CreateProxyServers(config)
-	wg := &sync.WaitGroup{}
-	for i, proxyServer := range proxyServers {
-		wg.Add(1)
-		listenerConfig := config.Listeners[i]
-		if listenerConfig.Type == HTTP {
-			startHTTPServer(listenerConfig.Address, proxyServer, wg)
-		} else {
-			startTLSServer(listenerConfig.Address, listenerConfig.CertFile, listenerConfig.KeyFile, proxyServer, wg)
-		}
-	}
-	wg.Wait()
-}
-
-func setupLogging(config *ProxyConfig) error {
+func SetupLogging(config *ProxyConfig) error {
 	if err := configureLog(accessLog, config.AccessLog, &AccessLogTextFormatter{}); err != nil {
 		return err
 	}
@@ -124,7 +89,7 @@ func configureLog(logger *logrus.Logger, logConfig LogConfig, formatter logrus.F
 	return nil
 }
 
-func setupMetrics(metricsAddress string) {
+func SetupMetrics(metricsAddress string) {
 	http.Handle("/metrics", promhttp.Handler())
 	go func() {
 		if err := http.ListenAndServe(metricsAddress, nil); err != http.ErrServerClosed {
@@ -135,7 +100,7 @@ func setupMetrics(metricsAddress string) {
 	prometheus.MustRegister(responseHistogram)
 }
 
-func startHTTPServer(listenAddress string, server *http.Server, wg *sync.WaitGroup) {
+func StartHTTPServer(listenAddress string, server *http.Server, wg *sync.WaitGroup) {
 	listener, err := net.Listen("tcp4", listenAddress)
 	if err != nil {
 		log.Fatalf("Could not start egress proxy HTTP listener: %s\n", err)
@@ -148,7 +113,7 @@ func startHTTPServer(listenAddress string, server *http.Server, wg *sync.WaitGro
 	}()
 }
 
-func startTLSServer(listenAddress, certFile, keyFile string, server *http.Server, wg *sync.WaitGroup) {
+func StartTLSServer(listenAddress, certFile, keyFile string, server *http.Server, wg *sync.WaitGroup) {
 	listener, err := net.Listen("tcp4", listenAddress)
 	if err != nil {
 		log.Fatalf("Could not start egress proxy HTTPS listener: %s\n", err)
