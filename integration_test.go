@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -153,8 +154,12 @@ func assertForbiddenIP(client *http.Client, host string, t *testing.T) {
 	if !ok {
 		t.Errorf("Error code header not present")
 	}
-	if errorCode[0] != proxy.BlockedIPAddress {
-		t.Errorf("Expected errorCode %s, but found %s", proxy.BlockedIPAddress, errorCode[0])
+	errorCodeI, err := strconv.Atoi(errorCode[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uint16(errorCodeI) != proxy.BlockedIPAddress {
+		t.Errorf("Expected errorCode %d, but found %s", proxy.BlockedIPAddress, errorCode[0])
 	}
 }
 
@@ -296,8 +301,12 @@ func TestHTTPSTargets(t *testing.T) {
 		if !ok {
 			t.Errorf("Error Code header not present")
 		}
-		if errorCode[0] != proxy.ClientCertNotFoundError {
-			t.Errorf("Expected %s errorCode, got %s", proxy.ClientCertNotFoundError, errorCode[0])
+		errorCodeI, err := strconv.Atoi(errorCode[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if uint16(errorCodeI) != proxy.ClientCertNotFoundError {
+			t.Errorf("Expected %d errorCode, got %s", proxy.ClientCertNotFoundError, errorCode[0])
 		}
 	})
 
@@ -436,8 +445,12 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 		if !ok {
 			t.Errorf("Error Code header not present")
 		}
-		if errorCode[0] != proxy.RequestTimedOut {
-			t.Errorf("Expected %s errorCode, got %s", proxy.RequestTimedOut, errorCode[0])
+		errorCodeI, err := strconv.Atoi(errorCode[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if uint16(errorCodeI) != proxy.RequestTimedOut {
+			t.Errorf("Expected %d errorCode, got %s", proxy.RequestTimedOut, errorCode[0])
 		}
 	})
 

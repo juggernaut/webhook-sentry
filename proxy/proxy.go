@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,17 +47,17 @@ const (
 	ReasonCodeHeader string = "X-WhSentry-ReasonCode"
 	ReasonHeader     string = "X-WhSentry-Reason"
 
-	BlockedIPAddress           string = "1000"
-	UnableToResolveIP          string = "1001"
-	InvalidRequestURI          string = "1002"
-	InvalidUrlScheme           string = "1003"
-	RequestTimedOut            string = "1004"
-	TLSHandshakeError          string = "1005"
-	TCPConnectionError         string = "1006"
-	CertificateValidationError string = "1007"
-	ResponseTooLarge           string = "1008"
-	InternalServerError        string = "1009"
-	ClientCertNotFoundError    string = "1010"
+	BlockedIPAddress           uint16 = 1000
+	UnableToResolveIP          uint16 = 1001
+	InvalidRequestURI          uint16 = 1002
+	InvalidUrlScheme           uint16 = 1003
+	RequestTimedOut            uint16 = 1004
+	TLSHandshakeError          uint16 = 1005
+	TCPConnectionError         uint16 = 1006
+	CertificateValidationError uint16 = 1007
+	ResponseTooLarge           uint16 = 1008
+	InternalServerError        uint16 = 1009
+	ClientCertNotFoundError    uint16 = 1010
 )
 
 
@@ -208,7 +209,7 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			defer resp.Body.Close()
 		}
 		var responseCode int
-		var errorCode string
+		var errorCode uint16
 		var errorMessage string
 		if err != nil {
 			responseCode, errorCode, errorMessage = mapError(requestUUID, err)
@@ -222,7 +223,7 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.writeResponseBody(requestUUID, w, resp, cancel)
 		}
 
-		if errorCode != "" {
+		if errorCode != 0 {
 			sendHTTPError(w, responseCode, errorCode, errorMessage)
 		}
 
@@ -331,13 +332,13 @@ func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.R
 	return p.roundTripper.RoundTrip(outboundRequest)
 }
 
-func sendHTTPError(w http.ResponseWriter, statusCode int, errorCode string, errorMessage string) {
-	w.Header().Add(ReasonCodeHeader, errorCode)
+func sendHTTPError(w http.ResponseWriter, statusCode int, errorCode uint16, errorMessage string) {
+	w.Header().Add(ReasonCodeHeader, strconv.Itoa(int(errorCode)))
 	w.Header().Add(ReasonHeader, errorMessage)
 	http.Error(w, errorMessage, statusCode)
 }
 
-func mapError(requestUUID uuid.UUID, err error) (int, string, string) {
+func mapError(requestUUID uuid.UUID, err error) (int, uint16, string) {
 	switch v := err.(type) {
 	case *proxyError:
 		return int(v.statusCode), v.errorCode, v.message
@@ -358,7 +359,7 @@ func mapError(requestUUID uuid.UUID, err error) (int, string, string) {
 	return http.StatusInternalServerError, InternalServerError, "Internal Server Error"
 }
 
-func mapNetOpError(requestUUID uuid.UUID, err net.OpError) (int, string, string) {
+func mapNetOpError(requestUUID uuid.UUID, err net.OpError) (int, uint16, string) {
 	wrapped := err.Unwrap()
 	// This is hacky, but the TLS alert errors aren't exported
 	if strings.Contains(wrapped.Error(), "tls:") {
@@ -401,8 +402,8 @@ func doLog(requestUUID uuid.UUID, message string, err error, level logrus.Level)
 	logger.Log(level, message)
 }
 
-func updateMetrics(duration time.Duration, errorCode string) {
-	responseHistogram.With(prometheus.Labels{"error_code": errorCode}).Observe(float64(duration.Milliseconds()))
+func updateMetrics(duration time.Duration, errorCode uint16) {
+	responseHistogram.With(prometheus.Labels{"error_code": strconv.Itoa(int(errorCode))}).Observe(float64(duration.Milliseconds()))
 }
 
 func isTLS(h http.Header) bool {
@@ -571,7 +572,7 @@ func isBlacklisted(cidrBlacklist []net.IPNet, ip net.IP) bool {
 type proxyError struct {
 	statusCode uint
 	message    string
-	errorCode  string
+	errorCode  uint16
 }
 
 func (p *proxyError) Error() string {

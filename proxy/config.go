@@ -269,13 +269,13 @@ func UnmarshalConfig(configData []byte) (*ProxyConfig, error) {
 	if err := config.validate(); err != nil {
 		return nil, fmt.Errorf("Invalid configuration: %s", err)
 	}
-	if err := initConfig(config); err != nil {
+	if err := InitConfig(config); err != nil {
 		return nil, err
 	}
 	return config, nil
 }
 
-func initConfig(config *ProxyConfig) error {
+func InitConfig(config *ProxyConfig) error {
 	if err := config.loadClientCert(); err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func initConfig(config *ProxyConfig) error {
 
 func InitDefaultConfig() (*ProxyConfig, error) {
 	config := NewDefaultConfig()
-	if err := initConfig(config); err != nil {
+	if err := InitConfig(config); err != nil {
 		return nil, err
 	}
 	return config, nil
