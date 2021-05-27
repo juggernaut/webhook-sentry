@@ -6,10 +6,10 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/juggernaut/webhook-sentry/certutil"
 	"github.com/juggernaut/webhook-sentry/proxy"
 	"io"
 	"io/ioutil"
@@ -30,64 +30,11 @@ const (
 	httpsTargetServerWithClientCertCheckPort = "12089"
 )
 
-type certificateFixtures struct {
-	rootCAs                   *x509.CertPool
-	rootCAPrivateKey          crypto.PrivateKey
-	rootCACert                *tls.Certificate
-	proxyCert                 *tls.Certificate
-	serverCert                *tls.Certificate
-	invalidHostnameServerCert *tls.Certificate
-	clientCert                *tls.Certificate
-}
-
-func newCertificateFixtures(t *testing.T) *certificateFixtures {
-	rootCertKey, rootCert, err := generateRootCACert()
-	if err != nil {
-		t.Fatalf("Error generating root CA cert: %s", err)
-	}
-	certPool := x509.NewCertPool()
-	certPool.AddCert(rootCert)
-
-	rootCACert, err := x509ToTLSCertificate(rootCert, rootCertKey)
-	if err != nil {
-		t.Fatalf("Error converting x509 to TLS certificate: %s", err)
-	}
-
-	serverCert, err := generateLeafCert("localhost", "WH Sentry Test Server", rootCert, rootCertKey, false)
-	if err != nil {
-		t.Fatalf("Error generating server cert: %s", err)
-	}
-
-	invalidHostnameServerCert, err := generateLeafCert("wh-target-server.com", "WH Sentry Test Server", rootCert, rootCertKey, false)
-	if err != nil {
-		t.Fatalf("Error generating server cert: %s", err)
-	}
-
-	proxyCert, err := generateLeafCert("127.0.0.1", "WH Sentry Proxy", rootCert, rootCertKey, false)
-	if err != nil {
-		t.Fatalf("Error generating server cert: %s", err)
-	}
-
-	clientCert, err := generateLeafCert("wh-client.com", "WH Sentry Client", rootCert, rootCertKey, true)
-	if err != nil {
-		t.Fatalf("Error generating client cert: %s", err)
-	}
-	return &certificateFixtures{
-		rootCAs:                   certPool,
-		rootCAPrivateKey:          rootCertKey,
-		rootCACert:                rootCACert,
-		serverCert:                serverCert,
-		invalidHostnameServerCert: invalidHostnameServerCert,
-		proxyCert:                 proxyCert,
-		clientCert:                clientCert,
-	}
-}
-
 type testFixture struct {
-	certificates   *certificateFixtures
-	configSetup    func(*proxy.ProxyConfig, *certificateFixtures)
-	serversSetup   func(*certificateFixtures) []*http.Server
-	transportSetup func(*http.Transport, *certificateFixtures)
+	certificates   *certutil.CertificateFixtures
+	configSetup    func(*proxy.ProxyConfig, *certutil.CertificateFixtures)
+	serversSetup   func(*certutil.CertificateFixtures) []*http.Server
+	transportSetup func(*http.Transport, *certutil.CertificateFixtures)
 	proxy          *http.Server
 	proxyType      proxy.Protocol
 	servers        []*http.Server
@@ -95,7 +42,7 @@ type testFixture struct {
 
 func (f *testFixture) setUp(t *testing.T) *http.Client {
 	if f.certificates == nil {
-		f.certificates = newCertificateFixtures(t)
+		f.certificates = certutil.NewCertificateFixtures(t)
 	}
 	proxyConfig := proxy.NewDefaultConfig()
 	if f.configSetup != nil {
@@ -108,7 +55,7 @@ func (f *testFixture) setUp(t *testing.T) *http.Client {
 	case proxy.HTTP:
 		f.proxy = startProxy(t, proxyConfig)
 	case proxy.HTTPS:
-		f.proxy = startTLSProxyWithCert(t, proxyConfig, f.certificates.proxyCert)
+		f.proxy = startTLSProxyWithCert(t, proxyConfig, f.certificates.ProxyCert)
 	}
 
 	if f.serversSetup == nil {
@@ -165,7 +112,7 @@ func assertForbiddenIP(client *http.Client, host string, t *testing.T) {
 
 func TestPrivateNetworkForbidden(t *testing.T) {
 	fixture := &testFixture{
-		serversSetup: func(c *certificateFixtures) []*http.Server {
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
 			server := startTargetServer(t)
 			return []*http.Server{server}
 		},
@@ -187,13 +134,13 @@ func TestPrivateNetworkForbidden(t *testing.T) {
 
 func TestProxy(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 		},
-		serversSetup: func(certificates *certificateFixtures) []*http.Server {
+		serversSetup: func(certificates *certutil.CertificateFixtures) []*http.Server {
 			var servers []*http.Server
 			httpServer := startTargetServer(t)
-			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, certificates.invalidHostnameServerCert)
+			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, certificates.InvalidHostnameServerCert)
 			return append(servers, httpServer, httpsServer)
 		},
 	}
@@ -244,16 +191,16 @@ func TestProxy(t *testing.T) {
 
 func TestHTTPSTargets(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, certificates *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, certificates *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.InsecureSkipCertVerification = true
 			config.ClientCerts = make(map[string]tls.Certificate)
-			config.ClientCerts["default"] = *certificates.clientCert
+			config.ClientCerts["default"] = *certificates.ClientCert
 		},
-		serversSetup: func(certificates *certificateFixtures) []*http.Server {
+		serversSetup: func(certificates *certutil.CertificateFixtures) []*http.Server {
 			var servers []*http.Server
-			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, certificates.serverCert)
-			httpsServerWithClientCertCheck := startTargetHTTPSServerWithClientCertCheck(t, certificates.serverCert, certificates.rootCAs)
+			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, certificates.ServerCert)
+			httpsServerWithClientCertCheck := startTargetHTTPSServerWithClientCertCheck(t, certificates.ServerCert, certificates.RootCAs)
 			return append(servers, httpsServer, httpsServerWithClientCertCheck)
 		},
 	}
@@ -363,12 +310,12 @@ func TestHTTPSTargets(t *testing.T) {
 
 func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.InsecureSkipCertVerification = true
 		},
-		serversSetup: func(certificates *certificateFixtures) []*http.Server {
-			target := startTargetHTTPSServerWithInMemoryCert(t, certificates.serverCert)
+		serversSetup: func(certificates *certutil.CertificateFixtures) []*http.Server {
+			target := startTargetHTTPSServerWithInMemoryCert(t, certificates.ServerCert)
 			return []*http.Server{target}
 		},
 	}
@@ -385,19 +332,19 @@ func TestHttpConnectNotAllowedByDefault(t *testing.T) {
 
 func TestMitmHttpConnect(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			// This only disables the cert verification for the target server from the proxy, not from client to (MITM) proxy
 			config.InsecureSkipCertVerification = true
-			config.MitmIssuerCert = c.rootCACert
+			config.MitmIssuerCert = c.RootCACert
 		},
-		serversSetup: func(c *certificateFixtures) []*http.Server {
-			server := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
+			server := startTargetHTTPSServerWithInMemoryCert(t, c.ServerCert)
 			return []*http.Server{server}
 		},
-		transportSetup: func(tr *http.Transport, c *certificateFixtures) {
+		transportSetup: func(tr *http.Transport, c *certutil.CertificateFixtures) {
 			tr.TLSClientConfig = &tls.Config{
-				RootCAs: c.rootCAs,
+				RootCAs: c.RootCAs,
 			}
 		},
 	}
@@ -418,12 +365,12 @@ func TestMitmHttpConnect(t *testing.T) {
 func TestOutboundConnectionLifetime(t *testing.T) {
 
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.ConnectionLifetime = time.Second * 5
 			config.ReadTimeout = time.Second * 2
 		},
-		serversSetup: func(c *certificateFixtures) []*http.Server {
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
 			// These are not http.Server unfortunately
 			go startSlowToRespondServer(t)
 			go startNeverSendsBodyServer(t)
@@ -481,14 +428,14 @@ func TestOutboundConnectionLifetime(t *testing.T) {
 
 func TestProxyTrustsTargetSignedWithCustomRootCA(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			// This is false by default, but make it explicit for clarity
 			config.InsecureSkipCertVerification = false
-			config.RootCACerts = c.rootCAs
+			config.RootCACerts = c.RootCAs
 		},
-		serversSetup: func(c *certificateFixtures) []*http.Server {
-			server := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
+			server := startTargetHTTPSServerWithInMemoryCert(t, c.ServerCert)
 			return []*http.Server{server}
 		},
 	}
@@ -524,20 +471,20 @@ func TestProxyTrustsTargetSignedWithCustomRootCA(t *testing.T) {
 
 func TestHTTPSProxyListener(t *testing.T) {
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.InsecureSkipCertVerification = false
-			config.RootCACerts = c.rootCAs
+			config.RootCACerts = c.RootCAs
 		},
-		serversSetup: func(c *certificateFixtures) []*http.Server {
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
 			httpServer := startTargetServer(t)
-			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, c.serverCert)
+			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, c.ServerCert)
 			return []*http.Server{httpServer, httpsServer}
 		},
 		proxyType: proxy.HTTPS,
-		transportSetup: func(tr *http.Transport, c *certificateFixtures) {
+		transportSetup: func(tr *http.Transport, c *certutil.CertificateFixtures) {
 			tr.TLSClientConfig = &tls.Config{
-				RootCAs: c.rootCAs,
+				RootCAs: c.RootCAs,
 			}
 		},
 	}
@@ -587,11 +534,11 @@ func TestHTTPSProxyListener(t *testing.T) {
 func TestContentLengthLimit(t *testing.T) {
 	maxContentLength := 8
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.MaxResponseBodySize = uint32(maxContentLength)
 		},
-		serversSetup: func(c *certificateFixtures) []*http.Server {
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
 			server := startLargeContentLengthServer(t)
 			return []*http.Server{server}
 		},
@@ -628,11 +575,11 @@ func TestContentLengthLimit(t *testing.T) {
 func TestChunkedResponseContentLengthLimit(t *testing.T) {
 	maxContentLength := 8 * 1024
 	fixture := &testFixture{
-		configSetup: func(config *proxy.ProxyConfig, c *certificateFixtures) {
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
 			config.InsecureSkipCidrDenyList = true
 			config.MaxResponseBodySize = uint32(maxContentLength)
 		},
-		serversSetup: func(c *certificateFixtures) []*http.Server {
+		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
 			server := startLargeContentLengthServer(t)
 			return []*http.Server{server}
 		},

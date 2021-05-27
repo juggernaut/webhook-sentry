@@ -1,7 +1,7 @@
 /**
 * Copyright (c) 2020 Ameya Lokare
 */
-package main
+package certutil
 
 import (
 	"crypto"
@@ -16,14 +16,15 @@ import (
 	"github.com/juggernaut/webhook-sentry/proxy"
 	"math/big"
 	"net"
+	"testing"
 	"time"
 )
 
-func generateKeyPair() (crypto.PrivateKey, error) {
+func GenerateKeyPair() (crypto.PrivateKey, error) {
 	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
 
-func generateCertificate(hostname string, organizationName string, key crypto.PrivateKey, notBefore time.Time, notAfter time.Time, issuerCertificate *x509.Certificate, issuerPrivateKey crypto.PrivateKey, isClientCert bool, isCA bool) ([]byte, error) {
+func GenerateCertificate(hostname string, organizationName string, key crypto.PrivateKey, notBefore time.Time, notAfter time.Time, issuerCertificate *x509.Certificate, issuerPrivateKey crypto.PrivateKey, isClientCert bool, isCA bool) ([]byte, error) {
 
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
@@ -86,14 +87,14 @@ func generateCertificate(hostname string, organizationName string, key crypto.Pr
 	return x509.CreateCertificate(rand.Reader, &template, issuerTemplate, proxy.PublicKey(key), issuerPrivateKey)
 }
 
-func generateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {
-	key, err := generateKeyPair()
+func GenerateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {
+	key, err := GenerateKeyPair()
 	if err != nil {
 		return nil, nil, err
 	}
 	notBefore := time.Now().Add(time.Duration(-1) * time.Hour)
 	notAfter := time.Now().Add(time.Duration(1) * time.Hour)
-	certBytes, err := generateCertificate("wh-sentry-root.com", "WH Sentry Root", key, notBefore, notAfter, nil, nil, true, true)
+	certBytes, err := GenerateCertificate("wh-sentry-root.com", "WH Sentry Root", key, notBefore, notAfter, nil, nil, true, true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -104,15 +105,15 @@ func generateRootCACert() (crypto.PrivateKey, *x509.Certificate, error) {
 	return key, cert, nil
 }
 
-func generateLeafCert(hostname string, organizationName string, issuerCert *x509.Certificate, issuerKey crypto.PrivateKey, isClient bool) (*tls.Certificate, error) {
-	key, err := generateKeyPair()
+func GenerateLeafCert(hostname string, organizationName string, issuerCert *x509.Certificate, issuerKey crypto.PrivateKey, isClient bool) (*tls.Certificate, error) {
+	key, err := GenerateKeyPair()
 	if err != nil {
 		return nil, err
 	}
 	notBefore := time.Now().Add(time.Duration(-1) * time.Minute)
 	notAfter := time.Now().Add(time.Duration(30) * time.Minute)
 
-	derBytes, err := generateCertificate(hostname, organizationName, key, notBefore, notAfter, issuerCert, issuerKey, isClient, false)
+	derBytes, err := GenerateCertificate(hostname, organizationName, key, notBefore, notAfter, issuerCert, issuerKey, isClient, false)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func generateLeafCert(hostname string, organizationName string, issuerCert *x509
 	return &cert, err
 }
 
-func x509ToTLSCertificate(x509Cert *x509.Certificate, privateKey crypto.PrivateKey) (*tls.Certificate, error) {
+func X509ToTLSCertificate(x509Cert *x509.Certificate, privateKey crypto.PrivateKey) (*tls.Certificate, error) {
 	certPemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: x509Cert.Raw})
 
 	privKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
@@ -139,3 +140,57 @@ func x509ToTLSCertificate(x509Cert *x509.Certificate, privateKey crypto.PrivateK
 	cert, err := tls.X509KeyPair(certPemBytes, privKeyPemBytes)
 	return &cert, err
 }
+
+type CertificateFixtures struct {
+	RootCAs                   *x509.CertPool
+	RootCAPrivateKey          crypto.PrivateKey
+	RootCACert                *tls.Certificate
+	ProxyCert                 *tls.Certificate
+	ServerCert                *tls.Certificate
+	InvalidHostnameServerCert *tls.Certificate
+	ClientCert                *tls.Certificate
+}
+
+func NewCertificateFixtures(t *testing.T) *CertificateFixtures {
+	rootCertKey, rootCert, err := GenerateRootCACert()
+	if err != nil {
+		t.Fatalf("Error generating root CA cert: %s", err)
+	}
+	certPool := x509.NewCertPool()
+	certPool.AddCert(rootCert)
+
+	rootCACert, err := X509ToTLSCertificate(rootCert, rootCertKey)
+	if err != nil {
+		t.Fatalf("Error converting x509 to TLS certificate: %s", err)
+	}
+
+	serverCert, err := GenerateLeafCert("localhost", "WH Sentry Test Server", rootCert, rootCertKey, false)
+	if err != nil {
+		t.Fatalf("Error generating server cert: %s", err)
+	}
+
+	invalidHostnameServerCert, err := GenerateLeafCert("wh-target-server.com", "WH Sentry Test Server", rootCert, rootCertKey, false)
+	if err != nil {
+		t.Fatalf("Error generating server cert: %s", err)
+	}
+
+	proxyCert, err := GenerateLeafCert("127.0.0.1", "WH Sentry Proxy", rootCert, rootCertKey, false)
+	if err != nil {
+		t.Fatalf("Error generating server cert: %s", err)
+	}
+
+	clientCert, err := GenerateLeafCert("wh-client.com", "WH Sentry Client", rootCert, rootCertKey, true)
+	if err != nil {
+		t.Fatalf("Error generating client cert: %s", err)
+	}
+	return &CertificateFixtures{
+		RootCAs:                   certPool,
+		RootCAPrivateKey:          rootCertKey,
+		RootCACert:                rootCACert,
+		ServerCert:                serverCert,
+		InvalidHostnameServerCert: invalidHostnameServerCert,
+		ProxyCert:                 proxyCert,
+		ClientCert:                clientCert,
+	}
+}
+
