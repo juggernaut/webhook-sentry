@@ -172,6 +172,7 @@ func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd 
 		maxContentLength:           proxyConfig.MaxResponseBodySize,
 		currentInboundConnsGauge:   connsGauge,
 		mitmer:                     mitmer,
+		requestIDHeader: proxyConfig.RequestIDHeader,
 	}
 	return &http.Server{
 		Addr:           listenerConfig.Address,
@@ -189,18 +190,22 @@ type ProxyHTTPHandler struct {
 	currentInboundConnsGauge   prometheus.Gauge
 	maxContentLength           uint32
 	mitmer                     *Mitmer
+	requestIDHeader string
 }
 
 func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestUUID := uuid.New()
 	if r.Method == http.MethodConnect {
 		// We only allow CONNECT if we have a configured MITM issuer certificate
 		if p.mitmer == nil {
 			http.Error(w, "CONNECT method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		p.mitmer.HandleHttpConnect(requestUUID, w, r)
+		p.mitmer.HandleHttpConnect(uuid.New().String(), w, r)
 	} else {
+		requestID := r.Header.Get(p.requestIDHeader)
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
 		ctx, cancel := context.WithTimeout(context.TODO(), p.outboundConnectionLifetime)
 		defer cancel()
 		start := time.Now()
@@ -212,7 +217,7 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var errorCode uint16
 		var errorMessage string
 		if err != nil {
-			responseCode, errorCode, errorMessage = mapError(requestUUID, err)
+			responseCode, errorCode, errorMessage = mapError(requestID, err)
 		} else if resp.ContentLength > 0 && uint32(resp.ContentLength) > p.maxContentLength {
 			responseCode = http.StatusBadGateway
 			errorCode = ResponseTooLarge
@@ -220,7 +225,7 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			responseCode = resp.StatusCode
 			writeResponseHeaders(w, resp)
-			p.writeResponseBody(requestUUID, w, resp, cancel)
+			p.writeResponseBody(requestID, w, resp, cancel)
 		}
 
 		if errorCode != 0 {
@@ -229,9 +234,9 @@ func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		duration := time.Now().Sub(start)
 		if errorCode == InternalServerError {
-			logError(requestUUID, "Unexpected error while proxying request", err)
+			logError(requestID, "Unexpected error while proxying request", err)
 		}
-		logRequest(r, requestUUID, responseCode, duration)
+		logRequest(r, requestID, responseCode, duration)
 		updateMetrics(duration, errorCode)
 	}
 }
@@ -268,7 +273,7 @@ func writeResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 	w.WriteHeader(resp.StatusCode)
 }
 
-func (p *ProxyHTTPHandler) writeResponseBody(requestUUID uuid.UUID, w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
+func (p *ProxyHTTPHandler) writeResponseBody(requestID string, w http.ResponseWriter, resp *http.Response, cancel context.CancelFunc) {
 	defer resp.Body.Close()
 	// XXX: pick optimal buffer size
 	buf := make([]byte, 512)
@@ -281,22 +286,22 @@ func (p *ProxyHTTPHandler) writeResponseBody(requestUUID uuid.UUID, w http.Respo
 		if n > 0 {
 			bytesReadSoFar += uint32(n)
 			if bytesReadSoFar > p.maxContentLength {
-				logWarn(requestUUID, "Response body exceeded maximum allowed length", nil)
+				logWarn(requestID, "Response body exceeded maximum allowed length", nil)
 				break
 			}
 			_, writeErr := w.Write(buf[:n])
 			if writeErr != nil {
-				logError(requestUUID, "Error writing to inbound socket", writeErr)
+				logError(requestID, "Error writing to inbound socket", writeErr)
 				break
 			}
 		}
 		if err == io.EOF {
 			break
 		} else if err == context.Canceled {
-			logWarn(requestUUID, "Socket idle read time out reached", nil)
+			logWarn(requestID, "Socket idle read time out reached", nil)
 			break
 		} else if err != nil {
-			logWarn(requestUUID, "Error occured reading response from target", err)
+			logWarn(requestID, "Error occured reading response from target", err)
 			break
 		}
 		timer.Reset(p.idleReadTimeout)
@@ -338,7 +343,7 @@ func sendHTTPError(w http.ResponseWriter, statusCode int, errorCode uint16, erro
 	http.Error(w, errorMessage, statusCode)
 }
 
-func mapError(requestUUID uuid.UUID, err error) (int, uint16, string) {
+func mapError(requestID string, err error) (int, uint16, string) {
 	switch v := err.(type) {
 	case *proxyError:
 		return int(v.statusCode), v.errorCode, v.message
@@ -349,56 +354,55 @@ func mapError(requestUUID uuid.UUID, err error) (int, uint16, string) {
 			return http.StatusBadGateway, RequestTimedOut, "Request to target timed out"
 		}
 		if opErr, ok := v.(*net.OpError); ok {
-			return mapNetOpError(requestUUID, *opErr)
+			return mapNetOpError(requestID, *opErr)
 		}
-		//logError(requestUUID, "Unexpected error while proxying request", err)
 	case x509.CertificateInvalidError, x509.HostnameError, x509.UnknownAuthorityError:
-		logWarn(requestUUID, "Certificate validation error", err)
+		logWarn(requestID, "Certificate validation error", err)
 		return http.StatusBadGateway, CertificateValidationError, v.Error()
 	}
 	return http.StatusInternalServerError, InternalServerError, "Internal Server Error"
 }
 
-func mapNetOpError(requestUUID uuid.UUID, err net.OpError) (int, uint16, string) {
+func mapNetOpError(requestID string, err net.OpError) (int, uint16, string) {
 	wrapped := err.Unwrap()
 	// This is hacky, but the TLS alert errors aren't exported
 	if strings.Contains(wrapped.Error(), "tls:") {
-		logWarn(requestUUID, "TLS handshake error", wrapped)
+		logWarn(requestID, "TLS handshake error", wrapped)
 		message := fmt.Sprintf("TLS handshake error: %s", wrapped)
 		return http.StatusBadGateway, TLSHandshakeError, message
 	}
 	if strings.Contains(wrapped.Error(), "connect:") {
-		logWarn(requestUUID, "TCP connection error", wrapped)
+		logWarn(requestID, "TCP connection error", wrapped)
 		message := fmt.Sprintf("TCP connection error: %s", wrapped)
 		return http.StatusBadGateway, TCPConnectionError, message
 	}
 	return http.StatusInternalServerError, InternalServerError, "Internal Server Error"
 }
 
-func logRequest(r *http.Request, requestUUID uuid.UUID, responseCode int, responseTime time.Duration) {
+func logRequest(r *http.Request, requestID string, responseCode int, responseTime time.Duration) {
 	url := r.RequestURI
 	if isTLS(r.Header) {
 		url = strings.Replace(url, "http:", "https:", 1)
 	}
-	requestLogger := accessLog.WithFields(logrus.Fields{"uuid": requestUUID.String(), "client_addr": r.RemoteAddr, "method": r.Method, "url": url, "response_code": responseCode,
+	requestLogger := accessLog.WithFields(logrus.Fields{"rq_id": requestID, "client_addr": r.RemoteAddr, "method": r.Method, "url": url, "response_code": responseCode,
 		"response_time": responseTime})
 	requestLogger.Info()
 }
 
-func logWarn(requestUUID uuid.UUID, message string, err error) {
-	doLog(requestUUID, message, err, logrus.WarnLevel)
+func logWarn(requestID string, message string, err error) {
+	doLog(requestID, message, err, logrus.WarnLevel)
 }
 
-func logError(requestUUID uuid.UUID, message string, err error) {
-	doLog(requestUUID, message, err, logrus.ErrorLevel)
+func logError(requestID string, message string, err error) {
+	doLog(requestID, message, err, logrus.ErrorLevel)
 }
 
-func doLog(requestUUID uuid.UUID, message string, err error, level logrus.Level) {
+func doLog(requestID string, message string, err error, level logrus.Level) {
 	var errorStr string
 	if err != nil {
 		errorStr = err.Error()
 	}
-	logger := log.WithFields(logrus.Fields{"uuid": requestUUID.String(), "error": errorStr})
+	logger := log.WithFields(logrus.Fields{"rq_id": requestID, "error": errorStr})
 	logger.Log(level, message)
 }
 
@@ -593,7 +597,7 @@ func (f *AccessLogTextFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	fields := entry.Data
 	ts := entry.Time.Format(time.RFC3339)
 	responseTime := fields["response_time"].(time.Duration)
-	logLine := fmt.Sprintf("[%s] %s %s %s %s %d %dms\n", ts, fields["uuid"], fields["client_addr"], fields["method"], fields["url"], fields["response_code"], responseTime.Milliseconds())
+	logLine := fmt.Sprintf("[%s] %s %s %s %s %d %dms\n", ts, fields["rq_id"], fields["client_addr"], fields["method"], fields["url"], fields["response_code"], responseTime.Milliseconds())
 	return []byte(logLine), nil
 }
 
@@ -608,6 +612,6 @@ func (f *ProxyLogTextFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		errorStr = err.(string)
 		errorStr = ": " + errorStr
 	}
-	logLine := fmt.Sprintf("[%s] %s %s %s%s\n", ts, fields["uuid"], strings.ToUpper(entry.Level.String()), entry.Message, errorStr)
+	logLine := fmt.Sprintf("[%s] %s %s %s%s\n", ts, fields["rq_id"], strings.ToUpper(entry.Level.String()), entry.Message, errorStr)
 	return []byte(logLine), nil
 }

@@ -48,6 +48,7 @@ accessLog:
 proxyLog:
   type: text
 metricsAddress: 127.0.0.1:2112
+requestIDHeader: Request-ID
 `
 
 type Cidr net.IPNet
@@ -72,6 +73,7 @@ type ProxyConfig struct {
 	AccessLog                    LogConfig                  `yaml:"accessLog"`
 	ProxyLog                     LogConfig                  `yaml:"proxyLog"`
 	MetricsAddress               string                     `yaml:"metricsAddress"`
+	RequestIDHeader string `yaml:"requestIDHeader"`
 }
 
 type Protocol string
