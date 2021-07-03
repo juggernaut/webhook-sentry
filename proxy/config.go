@@ -6,19 +6,18 @@ package proxy
 import (
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
+	_ "embed"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v2"
 )
+
+//go:embed cacert.pem
+var cacert []byte
 
 const defaultConfig = `
 cidrDenyList: [
@@ -42,7 +41,6 @@ readTimeout: 10s
 insecureSkipCertVerification: false
 insecureSkipCidrDenyList: false
 maxResponseBodySize: 1048576
-mozillaCaCerts: mozilla-cacerts/cacerts.pem
 accessLog:
   type: text
 proxyLog:
@@ -69,7 +67,6 @@ type ProxyConfig struct {
 	MitmIssuerCertFile           string                     `yaml:"mitmIssuerCertFile"`
 	MitmIssuerKeyFile            string                     `yaml:"mitmIssuerKeyFile"`
 	MitmIssuerCert               *tls.Certificate           `yaml:"-"`
-	MozillaCaCerts               string                     `yaml:"mozillaCaCerts"`
 	AccessLog                    LogConfig                  `yaml:"accessLog"`
 	ProxyLog                     LogConfig                  `yaml:"proxyLog"`
 	MetricsAddress               string                     `yaml:"metricsAddress"`
@@ -193,66 +190,12 @@ func loadCert(certFile string, keyFile string, certName string) (*tls.Certificat
 	}
 }
 
-func getRootCABundle(mozillaCaCerts string) (*x509.CertPool, error) {
-	var lastModified string
-	info, err := os.Stat(mozillaCaCerts)
-	if os.IsNotExist(err) {
-		dir := filepath.Dir(mozillaCaCerts)
-		if err := os.MkdirAll(dir, os.ModePerm); err != nil {
-			return nil, err
-		}
-	} else {
-		lastModified = info.ModTime().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-	}
-	req, err := http.NewRequest(http.MethodGet, "https://curl.haxx.se/ca/cacert.pem", nil)
-	if err != nil {
-		return nil, err
-	}
-	if lastModified != "" {
-		req.Header.Add("If-Modified-Since", lastModified)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		if lastModified != "" {
-			fmt.Printf("WARN: Request to check for latest CA Root bundle failed with error '%s'; continuing with existing CA root bundle on disk\n", err)
-			return loadRootCABundleFromFile(mozillaCaCerts)
-		}
-		return nil, err
-	}
-	defer resp.Body.Close()
-	switch resp.StatusCode {
-	case http.StatusOK:
-		f, err := os.Create(mozillaCaCerts)
-		defer f.Close()
-		if err != nil {
-			return nil, err
-		}
-		if _, err := io.Copy(f, resp.Body); err != nil {
-			return nil, err
-		}
-		f.Close()
-	case http.StatusNotModified:
-	default:
-		if lastModified != "" {
-			fmt.Printf("WARN: Request to check for latest CA Root bundle failed with status code %d; continuing with existing CA root bundle on disk\n", resp.StatusCode)
-			return loadRootCABundleFromFile(mozillaCaCerts)
-		}
-		return nil, fmt.Errorf("Request to download Mozilla CA bundle failed with status code %d", resp.StatusCode)
-	}
-
-	return loadRootCABundleFromFile(mozillaCaCerts)
-}
-
-func loadRootCABundleFromFile(cacerts string) (*x509.CertPool, error) {
-	pemBytes, err := ioutil.ReadFile(cacerts)
-	if err != nil {
-		return nil, err
-	}
+func loadRootCABundle() *x509.CertPool {
 	rootCerts := x509.NewCertPool()
-	if !rootCerts.AppendCertsFromPEM(pemBytes) {
-		return nil, errors.New("Failed to append certs from downloaded PEM")
+	if !rootCerts.AppendCertsFromPEM(cacert) {
+		panic("Failed to load embedded CA certs!")
 	}
-	return rootCerts, nil
+	return rootCerts
 }
 
 func UnmarshalConfigFromFile(configFile string) (*ProxyConfig, error) {
@@ -284,10 +227,7 @@ func InitConfig(config *ProxyConfig) error {
 	if err := config.loadMitmIssuerCert(); err != nil {
 		return err
 	}
-	rootCerts, err := getRootCABundle(config.MozillaCaCerts)
-	if err != nil {
-		return fmt.Errorf("Error downloading root CA bundle: %s", err)
-	}
+	rootCerts := loadRootCABundle()
 	config.RootCACerts = rootCerts
 	return nil
 }
