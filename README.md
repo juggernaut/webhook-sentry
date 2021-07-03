@@ -150,10 +150,6 @@ listeners:
 
 **Default**: 1048576
 
-* `mozillaCaCerts`: Path to which the Mozilla CA cert bundle is downloaded.
-
-**Default**: mozilla-cacerts/cacerts.pem
-
 * `clientCertFile`: Path to the client certificate to present to the destination (if enabling mutual TLS)
 
 * `clientKeyFile`: Path to the private key of the client certificate (if enabling mutual TLS)
