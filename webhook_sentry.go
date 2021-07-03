@@ -1,12 +1,16 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"github.com/juggernaut/webhook-sentry/proxy"
 	"log"
 	"os"
 	"sync"
 )
+
+//go:embed banner.txt
+var banner string
 
 func main() {
 	var config *proxy.ProxyConfig
