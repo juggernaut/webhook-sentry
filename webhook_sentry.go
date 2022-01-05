@@ -21,10 +21,10 @@ func main() {
 			log.Fatalf("Failed to unmarshal config from file %s: %s\n", os.Args[1], err)
 		}
 	} else {
-		config, err = proxy.InitDefaultConfig()
-		if err != nil {
-			log.Fatalf("Failed to initialize proxy configuration: %s\n", err)
-		}
+		config = proxy.NewDefaultConfig()
+	}
+	if err := proxy.InitConfig(config); err != nil {
+		log.Fatalf("Failed to initialize proxy configuration: %s\n", err)
 	}
 	if err := proxy.SetupLogging(config); err != nil {
 		log.Fatalf("Failed to configure logging: %s\n", err)

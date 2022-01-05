@@ -211,16 +211,13 @@ func UnmarshalConfig(configData []byte) (*ProxyConfig, error) {
 	if err := yaml.UnmarshalStrict(configData, config); err != nil {
 		return nil, fmt.Errorf("Malformed yaml: %s", err)
 	}
-	if err := config.validate(); err != nil {
-		return nil, fmt.Errorf("Invalid configuration: %s", err)
-	}
-	if err := InitConfig(config); err != nil {
-		return nil, err
-	}
 	return config, nil
 }
 
 func InitConfig(config *ProxyConfig) error {
+	if err := config.validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %s", err)
+	}
 	if err := config.loadClientCert(); err != nil {
 		return err
 	}
@@ -230,14 +227,6 @@ func InitConfig(config *ProxyConfig) error {
 	rootCerts := loadRootCABundle()
 	config.RootCACerts = rootCerts
 	return nil
-}
-
-func InitDefaultConfig() (*ProxyConfig, error) {
-	config := NewDefaultConfig()
-	if err := InitConfig(config); err != nil {
-		return nil, err
-	}
-	return config, nil
 }
 
 func NewDefaultConfig() *ProxyConfig {
