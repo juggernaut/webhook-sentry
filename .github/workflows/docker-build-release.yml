@@ -21,5 +21,5 @@ jobs:
         run: |
           docker buildx rm
           docker buildx create --use --name webhook-sentry-builder
-          docker buildx build --push --platform linux/amd64,linux/arm64 -t ${{ secrets.DOCKERHUB_REPO }}:latest --file Dockerfile .
+          docker buildx build --push --platform linux/amd64,linux/arm64 -t ${{ secrets.DOCKERHUB_REPO }}:$(git rev-parse --short HEAD) -t ${{ secrets.DOCKERHUB_REPO }}:latest --file Dockerfile .
 
