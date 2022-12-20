@@ -23,13 +23,31 @@ may not want to allocate static IPs to your application instances. In other situ
 egress proxy layer, you only need to assign static IPs to your proxy instances.
 
 ## Getting Started
+
+Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` section of the [config](#Configuration).
+
+The simplest way to run Webhook Sentry is to use the latest binary:
+
 1. Download the [latest release](https://github.com/juggernaut/webhook-sentry/releases/latest) for your platform
 2. Run the downloaded binary:
 ```
 whsentry
 ```
 
-Webhook Sentry runs on port 9090 by default. You can configure the address and port in the `listeners` section of the [config](#Configuration).
+We also have a docker image:
+
+```
+docker run juggernaut/webhook-sentry:latest
+```
+
+You can also pin a [tagged release](https://github.com/juggernaut/webhook-sentry/releases):
+
+```
+docker run juggernaut/webhook-sentry:v1.0.8
+```
+
+If you need to override settings, you can mount a settings file into your docker image.
+
 
 ## Usage
 ### HTTP target
