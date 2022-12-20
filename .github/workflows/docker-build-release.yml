@@ -25,5 +25,5 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           push: true
-          tags: juggernaut/webhook-sentry:${{ GITHUB_REF }}
+          tags: juggernaut/webhook-sentry:${{ github.ref }}
           platforms: linux/amd64,linux/arm64
