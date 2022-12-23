@@ -10,4 +10,5 @@ COPY . ./
 
 RUN go build -o /webhook-sentry
 EXPOSE 9090
+EXPOSE 2112
 CMD /webhook-sentry
