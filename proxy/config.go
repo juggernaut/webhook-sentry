@@ -45,7 +45,7 @@ accessLog:
   type: text
 proxyLog:
   type: text
-metricsAddress: 127.0.0.1:2112
+metricsAddress: ":2112"
 requestIDHeader: Request-ID
 `
 
