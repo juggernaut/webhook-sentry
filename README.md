@@ -48,6 +48,8 @@ docker run -p 9090:9090 juggernaut/webhook-sentry:v1.0.8
 
 If you need to override settings, you can mount a settings file into your docker image.
 
+If you want prometheus metrics for the service, be allow access on port 2112 with something like `-p 2112:2112`.
+
 
 ## Usage
 ### HTTP target
@@ -70,6 +72,12 @@ Specify `clientCertFile` and `clientKeyFile` in the YAML configuration to enable
 ```
 clientCertFile: /path/to/client.pem
 clientKeyFile: /path/to/key.pem
+```
+
+### Prometheus Metrics
+
+```
+curl http://localhost:2112/metrics
 ```
 
 ## Protections
