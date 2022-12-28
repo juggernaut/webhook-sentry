@@ -70,7 +70,7 @@ type ProxyConfig struct {
 	AccessLog                    LogConfig                  `yaml:"accessLog"`
 	ProxyLog                     LogConfig                  `yaml:"proxyLog"`
 	MetricsAddress               string                     `yaml:"metricsAddress"`
-	RequestIDHeader string `yaml:"requestIDHeader"`
+	RequestIDHeader              string                     `yaml:"requestIDHeader"`
 }
 
 type Protocol string
@@ -112,7 +112,7 @@ func (cidr *Cidr) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	return nil
 }
 
-func (config *ProxyConfig) validate() error {
+func (config *ProxyConfig) Validate() error {
 	if err := validateListeners(config.Listeners); err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func UnmarshalConfig(configData []byte) (*ProxyConfig, error) {
 	if err := yaml.UnmarshalStrict(configData, config); err != nil {
 		return nil, fmt.Errorf("Malformed yaml: %s", err)
 	}
-	if err := config.validate(); err != nil {
+	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("Invalid configuration: %s", err)
 	}
 	if err := InitConfig(config); err != nil {
