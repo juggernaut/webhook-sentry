@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"fmt"
 	"github.com/juggernaut/webhook-sentry/proxy"
+	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"log"
 	"net"
@@ -14,34 +15,26 @@ import (
 //go:embed banner.txt
 var banner string
 
+var (
+	cfgFile string
+	rootCmd = &cobra.Command{
+		Use:   "webhook-sentry",
+		Short: "An egress proxy for sending webhooks securely",
+		Run: func(cmd *cobra.Command, args []string) {
+			execute()
+		},
+	}
+)
+
 func main() {
-	config := getConfig()
-	if err := proxy.SetupLogging(config); err != nil {
-		log.Fatalf("Failed to configure logging: %s\n", err)
-	}
-
-	proxy.SetupMetrics(config.MetricsAddress)
-
-	fmt.Print(banner)
-
-	proxyServers := proxy.CreateProxyServers(config)
-	wg := &sync.WaitGroup{}
-	for i, proxyServer := range proxyServers {
-		wg.Add(1)
-		listenerConfig := config.Listeners[i]
-		if listenerConfig.Type == proxy.HTTP {
-			proxy.StartHTTPServer(listenerConfig.Address, proxyServer, wg)
-		} else {
-			proxy.StartTLSServer(listenerConfig.Address, listenerConfig.CertFile, listenerConfig.KeyFile, proxyServer, wg)
-		}
-	}
-	wg.Wait()
+	rootCmd.Execute()
 }
 
-func getConfig() *proxy.ProxyConfig {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath(".")
+func init() {
+	cobra.OnInitialize(initConfig)
+	rootCmd.Flags().String("listener-address", "", "Address to listen on")
+
+	viper.BindPFlag("listener.address", rootCmd.Flags().Lookup("listener-address"))
 
 	viper.SetDefault("cidrDenyList", []string{
 		"127.0.0.0/8",
@@ -69,6 +62,18 @@ func getConfig() *proxy.ProxyConfig {
 	viper.SetDefault("metrics.address", ":2112")
 	viper.SetDefault("requestIDHeader", "Request-ID")
 
+}
+
+func initConfig() {
+
+	if cfgFile != "" {
+		viper.SetConfigFile(cfgFile)
+	} else {
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
+		viper.AddConfigPath(".")
+	}
+
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			// Config file not found; rely on defaults only
@@ -77,13 +82,15 @@ func getConfig() *proxy.ProxyConfig {
 			panic(err)
 		}
 	}
+}
 
+func execute() {
 	var cidrs []proxy.Cidr
 	for _, c := range viper.GetStringSlice("cidrDenyList") {
 		cidrs = append(cidrs, validCidr(c))
 	}
 
-	proxyConfig := &proxy.ProxyConfig{
+	config := &proxy.ProxyConfig{
 		CidrDenyList: cidrs,
 		Listeners: []proxy.ListenerConfig{{
 			Address:  viper.GetString("listener.address"),
@@ -107,11 +114,34 @@ func getConfig() *proxy.ProxyConfig {
 		RequestIDHeader:              viper.GetString("requestIDHeader"),
 	}
 
-	if err := proxyConfig.Validate(); err != nil {
+	if err := config.Validate(); err != nil {
 		panic(err)
 	}
 
-	return proxyConfig
+	if err := proxy.InitConfig(config); err != nil {
+		panic(err)
+	}
+	if err := proxy.SetupLogging(config); err != nil {
+		log.Fatalf("Failed to configure logging: %s\n", err)
+	}
+
+	proxy.SetupMetrics(config.MetricsAddress)
+
+	fmt.Print(banner)
+
+	proxyServers := proxy.CreateProxyServers(config)
+	wg := &sync.WaitGroup{}
+	for i, proxyServer := range proxyServers {
+		wg.Add(1)
+		listenerConfig := config.Listeners[i]
+		if listenerConfig.Type == proxy.HTTP {
+			proxy.StartHTTPServer(listenerConfig.Address, proxyServer, wg)
+		} else {
+			proxy.StartTLSServer(listenerConfig.Address, listenerConfig.CertFile, listenerConfig.KeyFile, proxyServer, wg)
+		}
+	}
+	wg.Wait()
+
 }
 
 func validProtocol(proto string) proxy.Protocol {
