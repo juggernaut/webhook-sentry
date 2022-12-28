@@ -37,13 +37,13 @@ whsentry
 We also have a docker image:
 
 ```
-docker run juggernaut/webhook-sentry:latest
+docker run -p 9090:9090 juggernaut/webhook-sentry:latest
 ```
 
 You can also pin a [tagged release](https://github.com/juggernaut/webhook-sentry/releases):
 
 ```
-docker run juggernaut/webhook-sentry:v1.0.8
+docker run -p 9090:9090 juggernaut/webhook-sentry:v1.0.8
 ```
 
 If you need to override settings, you can mount a settings file into your docker image.
