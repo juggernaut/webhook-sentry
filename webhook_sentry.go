@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/viper"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -93,6 +94,8 @@ func init() {
 	viper.SetDefault("metrics.address", ":2112")
 	viper.SetDefault("requestIDHeader", "Request-ID")
 
+	viper.AutomaticEnv()
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 }
 
 func initConfig() {
