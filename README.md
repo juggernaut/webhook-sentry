@@ -46,7 +46,7 @@ You can also pin a [tagged release](https://github.com/juggernaut/webhook-sentry
 docker run -p 9090:9090 juggernaut/webhook-sentry:v1.0.8
 ```
 
-If you need to override settings, you can mount a settings file into your docker image.
+If you need to override settings, you can mount a configuration file, pass in command line flags or set environment variables. See [configuration](#Configuration) for details.
 
 If you need prometheus metrics for the service, allow access on port 2112 with something like `-p 2112:2112`.
 
@@ -68,13 +68,17 @@ curl -v -x http://localhost:9090 --header 'X-WhSentry-TLS: true' http://www.goog
 Although `CONNECT` is supported, I strongly recommend using the header approach to take advantage of the TLS capabilities of Webhook Sentry, like mutual TLS and robust certificate validation.
 
 ### Mutual TLS
-Specify `clientCertFile` and `clientKeyFile` in the YAML configuration to enable mutual TLS:
+Specify `clientCertFile` and `clientKeyFile` in the configuration to enable mutual TLS:
 ```
 clientCertFile: /path/to/client.pem
 clientKeyFile: /path/to/key.pem
 ```
 
 ### Prometheus Metrics
+
+Point your collector to <proxy-address>:2112 for metrics.
+
+E.g if the proxy is running on localhost, to verify metrics are correctly exposed:
 
 ```
 curl http://localhost:2112/metrics
@@ -147,17 +151,19 @@ On startup, Webhook Sentry checks if there is a newer version of the Mozilla CA 
 Additionally, by virtue of being written in Go, Webhook Sentry does not rely on OpenSSL or GnuTLS for certificate validation.
 
 ## Configuration
-You can configure webhook-sentry with a YAML file.
+webhook-sentry uses [viper](https://github.com/spf13/viper) for configuration. You can use a yaml file, environment variables or command line flags to provide configuration parameters.
 
-* `listeners`: A list of HTTP/HTTPS endpoints the proxy listens on. For HTTPS endpoints, also specify `certFile` and `keyFile`.
+The parameters documented below are in YAML, but most can also be provided as environment variables or command line flags:
+
+* `listener`: An HTTP/HTTPS endpoint the proxy listens on. For HTTPS endpoints, also specify `certFile` and `keyFile`.
 
 **Example**:
 ```
-listeners:
-  - type: https
-    address: 127.0.0.1:9091
-    certFile: /path/to/cert
-    keyFile: /path/to/key
+listener:
+  type: https
+  address: 127.0.0.1:9091
+  certFile: /path/to/cert
+  keyFile: /path/to/key
 ```
 
 * `connectTimeout`: Timeout for the TCP connection to the destination host.
@@ -191,9 +197,9 @@ accessLog:
 
 * `proxyLog`: Specifies `type` and `file` of the proxy application log. This log includes warnings and info messages related to handling proxy requests. By default, `text` is output to stdout.
 
-* `metricsAddress`: Listening address of the Prometheus metrics endpoint.
+* `metrics.address`: Listening address of the Prometheus metrics endpoint.
 
-**Default**: 127.0.0.1:2112
+**Default**: :2112
   
 
 ## Limitations
