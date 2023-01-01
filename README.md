@@ -152,6 +152,7 @@ Additionally, by virtue of being written in Go, Webhook Sentry does not rely on 
 
 ## Configuration
 webhook-sentry uses [viper](https://github.com/spf13/viper) for configuration. You can use a yaml file, environment variables or command line flags to provide configuration parameters.
+By default, webhook-sentry looks for a file named `config.yaml` in the current working directory. You can specify a different file using the `--config <filename` flag.
 
 The parameters documented below are in YAML, but most can also be provided as environment variables or command line flags:
 
