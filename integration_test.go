@@ -1,6 +1,6 @@
 /**
 * Copyright (c) 2020 Ameya Lokare
-*/
+ */
 package main
 
 import (
@@ -113,7 +113,7 @@ func assertForbiddenIP(client *http.Client, host string, t *testing.T) {
 func TestPrivateNetworkForbidden(t *testing.T) {
 	fixture := &testFixture{
 		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
-			server := startTargetServer(t)
+			server := startTargetServer(t, nil)
 			return []*http.Server{server}
 		},
 	}
@@ -139,7 +139,7 @@ func TestProxy(t *testing.T) {
 		},
 		serversSetup: func(certificates *certutil.CertificateFixtures) []*http.Server {
 			var servers []*http.Server
-			httpServer := startTargetServer(t)
+			httpServer := startTargetServer(t, nil)
 			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, certificates.InvalidHostnameServerCert)
 			return append(servers, httpServer, httpsServer)
 		},
@@ -477,7 +477,7 @@ func TestHTTPSProxyListener(t *testing.T) {
 			config.RootCACerts = c.RootCAs
 		},
 		serversSetup: func(c *certutil.CertificateFixtures) []*http.Server {
-			httpServer := startTargetServer(t)
+			httpServer := startTargetServer(t, nil)
 			httpsServer := startTargetHTTPSServerWithInMemoryCert(t, c.ServerCert)
 			return []*http.Server{httpServer, httpsServer}
 		},
@@ -623,6 +623,71 @@ func TestChunkedResponseContentLengthLimit(t *testing.T) {
 	fixture.tearDown(t)
 }
 
+func TestRequestContentLength(t *testing.T) {
+	headerChan := make(chan map[string][]string, 1)
+	fixture := &testFixture{
+		configSetup: func(config *proxy.ProxyConfig, c *certutil.CertificateFixtures) {
+			config.InsecureSkipCidrDenyList = true
+		},
+		serversSetup: func(certificates *certutil.CertificateFixtures) []*http.Server {
+			var servers []*http.Server
+			httpServer := startTargetServer(t, headerChan)
+			return append(servers, httpServer)
+		},
+	}
+
+	client := fixture.setUp(t)
+
+	t.Run("Request with content length header is passed along to target", func(t *testing.T) {
+		resp, err := client.Post(fmt.Sprintf("http://localhost:%s/target", httpTargetServerPort), "text/plain", strings.NewReader("Hello webhook sentry!"))
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		headers := <-headerChan
+		cl, ok := headers["Content-Length"]
+		if !ok {
+			t.Error("No Content-Length found in request headers")
+		}
+
+		expectedLen := len("Hello webhook sentry!")
+		if cl[0] != strconv.Itoa(expectedLen) {
+			t.Errorf("Expected Content-Length %d, but found %s", expectedLen, cl[0])
+		}
+	})
+
+	t.Run("Request with Transfer-Encoding chunked is passed along to target", func(t *testing.T) {
+		req, err := http.NewRequest("POST", fmt.Sprintf("http://localhost:%s/target", httpTargetServerPort), strings.NewReader("Hello webhook sentry!"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.TransferEncoding = []string{"chunked"}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Errorf("Error in GET request to target server via proxy: %s\n", err)
+		}
+		if resp.StatusCode != 200 {
+			t.Errorf("Expected status code 200, got %d\n", resp.StatusCode)
+		}
+		headers := <-headerChan
+		_, ok := headers["Content-Length"]
+		if ok {
+			t.Error("Expected absence of Content-Length in request headers, but was found")
+		}
+
+		te, ok := headers["Transfer-Encoding"]
+		if !ok {
+			t.Error("Expected Transfer-Encoding in request headers, but was not found")
+		}
+		if te[0] != "chunked" {
+			t.Errorf("Expected Transfer-Encoding value 'chunked', but was %s", te[0])
+		}
+	})
+
+}
+
 func waitForStartup(t *testing.T, address string) {
 	i := 0
 	for {
@@ -699,9 +764,17 @@ func startTLSProxyWithCert(t *testing.T, p *proxy.ProxyConfig, proxyCert *tls.Ce
 	return pServer
 }
 
-func startTargetServer(t *testing.T) *http.Server {
+func startTargetServer(t *testing.T, headerChan chan map[string][]string) *http.Server {
 	serveMux := http.NewServeMux()
 	serveMux.HandleFunc("/target", func(w http.ResponseWriter, r *http.Request) {
+		if headerChan != nil {
+			headers := r.Header.Clone()
+			// Hack to add Transfer-Encoding, since the headers map doesn't seem to have it
+			if r.TransferEncoding != nil {
+				headers["Transfer-Encoding"] = r.TransferEncoding
+			}
+			headerChan <- headers
+		}
 		w.Header().Set("X-Custom-Header", "custom")
 		fmt.Fprint(w, "Hello from target")
 	})

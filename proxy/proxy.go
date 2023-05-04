@@ -60,7 +60,6 @@ const (
 	ClientCertNotFoundError    uint16 = 1010
 )
 
-
 func SetupLogging(config *ProxyConfig) error {
 	if err := configureLog(accessLog, config.AccessLog, &AccessLogTextFormatter{}); err != nil {
 		return err
@@ -172,7 +171,7 @@ func newProxyServer(listenerConfig ListenerConfig, proxyConfig *ProxyConfig, sd 
 		maxContentLength:           proxyConfig.MaxResponseBodySize,
 		currentInboundConnsGauge:   connsGauge,
 		mitmer:                     mitmer,
-		requestIDHeader: proxyConfig.RequestIDHeader,
+		requestIDHeader:            proxyConfig.RequestIDHeader,
 	}
 	return &http.Server{
 		Addr:           listenerConfig.Address,
@@ -190,7 +189,7 @@ type ProxyHTTPHandler struct {
 	currentInboundConnsGauge   prometheus.Gauge
 	maxContentLength           uint32
 	mitmer                     *Mitmer
-	requestIDHeader string
+	requestIDHeader            string
 }
 
 func (p *ProxyHTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -334,6 +333,7 @@ func (p ProxyHTTPHandler) doProxy(ctx context.Context, r *http.Request) (*http.R
 	}
 	copyHeaders(r.Header, outboundRequest.Header)
 	outboundRequest.Header["User-Agent"] = []string{"Webhook Sentry/0.1"}
+	outboundRequest.ContentLength = r.ContentLength
 	return p.roundTripper.RoundTrip(outboundRequest)
 }
 
