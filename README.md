@@ -85,7 +85,7 @@ curl http://localhost:2112/metrics
 ```
 
 ## AWS EKS Configuration for Static IP egress
-To deploy Webhook Sentry with a static egress IP addresses in AWS EKS:
+To deploy Webhook Sentry with a static egress IP addresses in AWS EKS, you'll need a node group with an Elastic IP address:
 
  - Create a new NAT Gateway.
  - Create an Elastic IP address and assign it to your NAT Gateway. This will be your egress IP.
@@ -214,9 +214,6 @@ accessLog:
 * `metrics.address`: Listening address of the Prometheus metrics endpoint.
 
 **Default**: :2112
-
-## AWS 
-
 
 ## Limitations
 * No IPv6 support
