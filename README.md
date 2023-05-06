@@ -84,6 +84,19 @@ E.g if the proxy is running on localhost, to verify metrics are correctly expose
 curl http://localhost:2112/metrics
 ```
 
+## AWS EKS Configuration for Static IP egress
+To deploy Webhook Sentry with a static egress IP addresses in AWS EKS, you'll need a node group with an Elastic IP address:
+
+ - Create a new NAT Gateway.
+ - Create an Elastic IP address and assign it to your NAT Gateway. This will be your egress IP.
+ - Create a subnet dividing your network space.
+ - Create a route table linking the subnet to the NAT Gateway.
+ - Create a custom node group for the Webhook Sentry pods and assign it to the new subnet.
+ - Finally, [assign](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/) your Webhook Sentry pods to that node group, and ensure your existing pods do not get assigned to it.
+
+For redundancy, you may want to create multiple NAT Gatways, subnets, and egress IP addressses.
+
+
 ## Protections
 ### SSRF attack protection
 Webhook Sentry blocks access to private/internal IPs to prevent SSRF attacks:
@@ -201,7 +214,6 @@ accessLog:
 * `metrics.address`: Listening address of the Prometheus metrics endpoint.
 
 **Default**: :2112
-  
 
 ## Limitations
 * No IPv6 support
